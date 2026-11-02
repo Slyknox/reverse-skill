@@ -2,7 +2,8 @@
 
 A source is "verified" only when its page was fetched over https and the quote
 appears in the page text after normalization (case, whitespace, curly quotes,
-dashes and HTML entities are evened out; nothing else is fuzzy). Everything
+dashes and HTML entities are evened out; nothing else is fuzzy). PDFs are read
+with the optional pypdf package when it is installed. Everything
 else gets a status that says why it is not verified.
 """
 
@@ -19,6 +20,9 @@ from html.parser import HTMLParser
 from urllib.parse import urlparse
 
 MAX_BYTES = 5 * 1024 * 1024
+MAX_PDF_BYTES = 25 * 1024 * 1024  # annual reports and filings are often 5-20 MB
+MAX_PDF_PAGES = 500
+PDF_TYPES = ("application/pdf", "application/x-pdf")
 TEXT_TYPES = ("text/html", "text/plain", "application/xhtml+xml", "application/json", "text/markdown", "application/xml", "text/xml")
 
 STATUSES = {
@@ -26,7 +30,7 @@ STATUSES = {
 	"quote_not_found": "Page fetched, but the quote is not on it.",
 	"no_quote": "Source has no quote to check.",
 	"fetch_failed": "Page could not be fetched.",
-	"unsupported_type": "Page is not text or HTML (for example a PDF); check it by hand.",
+	"unsupported_type": "Page is not text, HTML or PDF, or a PDF reader is not installed; check it by hand.",
 	"refused_url": "Not an https URL on a public host.",
 }
 
@@ -84,7 +88,8 @@ def normalize(text: str) -> str:
 
 def contains_quote(page_text: str, quote: str) -> bool:
 	q = normalize(quote)
-	return bool(q) and q in normalize(page_text)
+	# PDF text may carry a second, de-hyphenated copy after "\n\f\n"; a quote must sit wholly inside one copy.
+	return bool(q) and any(q in normalize(part) for part in page_text.split("\n\f\n"))
 
 
 def _public_https(url: str) -> bool:
@@ -138,6 +143,11 @@ class Fetcher:
 		try:
 			with self.opener.open(req, timeout=self.timeout) as resp:
 				ctype = (resp.headers.get_content_type() or "").lower()
+				if ctype in PDF_TYPES or (ctype == "application/octet-stream" and urlparse(url).path.lower().endswith(".pdf")):
+					body = resp.read(MAX_PDF_BYTES + 1)
+					if len(body) > MAX_PDF_BYTES:
+						raise FetchError("fetch_failed", "PDF larger than 25 MB")
+					return pdf_to_text(body)
 				if ctype not in TEXT_TYPES:
 					raise FetchError("unsupported_type", f"content type {ctype}")
 				body = resp.read(MAX_BYTES + 1)
@@ -153,8 +163,43 @@ class Fetcher:
 		return html_to_text(raw) if ctype in ("text/html", "application/xhtml+xml") else raw
 
 
+def pdf_to_text(data: bytes) -> str:
+	"""Text of every page, via the optional pypdf package. Refuses rather than reads part of a document.
+
+	PDF text often breaks words across lines with a hyphen ("compa-\\nny"). A quote
+	may be checked against any form, so the result holds the text as extracted and,
+	each after "\\n\\f\\n", the text with line-end hyphens dropped and kept.
+	"""
+	if not data.startswith(b"%PDF"):
+		raise FetchError("fetch_failed", "served as PDF but is not a PDF file")
+	try:
+		from pypdf import PdfReader
+		from pypdf.errors import PdfReadError
+	except ImportError:
+		raise FetchError("unsupported_type", "PDF source: install pypdf (pip install pypdf) to check it") from None
+	import io
+
+	try:
+		reader = PdfReader(io.BytesIO(data))
+		if reader.is_encrypted:
+			raise FetchError("unsupported_type", "PDF is encrypted")
+		if len(reader.pages) > MAX_PDF_PAGES:
+			raise FetchError("fetch_failed", f"PDF has {len(reader.pages)} pages, over the {MAX_PDF_PAGES}-page limit")
+		text = "\n".join(page.extract_text() or "" for page in reader.pages)
+	except FetchError:
+		raise
+	except (PdfReadError, ValueError, KeyError, TypeError) as err:
+		raise FetchError("fetch_failed", f"PDF could not be read: {err}") from None
+	if not text.strip():
+		raise FetchError("unsupported_type", "PDF has no extractable text (scanned image?)")
+	# A line-end hyphen is either a word split ("mil-" + "lion") or a real hyphen ("cloud-" + "based").
+	joined = re.sub(r"(\w)-[ \t]*\n\s*(\w)", r"\1\2", text)
+	kept = re.sub(r"(\w)-[ \t]*\n\s*(\w)", r"\1-\2", text)
+	return text if joined == text else f"{text}\n\f\n{joined}\n\f\n{kept}"
+
+
 class FixtureFetcher:
-	"""{url: page text} or {url: {"error": status, "reason": "..."}}; a missing url fails to fetch."""
+	"""{url: page text}, {url: {"pdf_base64": "..."}} or {url: {"error": status, "reason": "..."}}; a missing url fails to fetch."""
 
 	def __init__(self, pages: dict):
 		self.pages = pages
@@ -163,6 +208,10 @@ class FixtureFetcher:
 		page = self.pages.get(url)
 		if page is None:
 			raise FetchError("fetch_failed", "not in fixture")
+		if isinstance(page, dict) and "pdf_base64" in page:
+			import base64
+
+			return pdf_to_text(base64.b64decode(page["pdf_base64"]))
 		if isinstance(page, dict):
 			raise FetchError(page.get("error", "fetch_failed"), page.get("reason", "fixture error"))
 		return html_to_text(page) if "<" in page and ">" in page else page

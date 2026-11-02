@@ -5,8 +5,8 @@ GitHub repository or a sourced dossier about a company or product. It gives
 you a pros and cons matrix and an original build plan: what to keep, and what
 to fix, each with a measure of done.
 
-It is a standalone tool (Python 3.11+). Everything except `draft` uses only
-the standard library; `draft` needs the Anthropic SDK. It is separate from the
+It is a standalone tool (Python 3.11+). Everything uses only the standard
+library except `draft` (needs the Anthropic SDK) and PDF sources (need pypdf). It is separate from the
 reverse-skill security router and not routed by it. Design and rules:
 [SPEC.md](SPEC.md).
 
@@ -33,13 +33,18 @@ as `node_modules` are skipped), CI, security policy, contributor guide, docs,
 releases and bus factor. If GitHub truncates the listing, the report says so.
 
 **`deps`** finds `package.json`, `pyproject.toml`, `requirements*.txt`,
-`Cargo.toml` and `go.mod` anywhere in the tree (at most 10 manifests). It then
-asks npm, PyPI or crates.io for each runtime dependency's license, linking
-every answer to the registry response it came from. It flags copyleft
-licenses, dependencies with no identified license, and packages not on the
-registry. Go modules have no license API, so they are reported as not looked
-up. `--max-lookups` (default 40) caps registry calls, and `--include-dev` adds
-dev dependencies.
+`Cargo.toml`, `go.mod`, `pom.xml`, `*.csproj` and `Gemfile` anywhere in the tree
+(at most 10 manifests). It then looks up each runtime dependency's license:
+npm, PyPI, crates.io and RubyGems directly, and Go, Maven and NuGet through
+deps.dev. Every answer links to the response it came from. deps.dev answers
+per version. A declared version that names one release is looked up as is. A
+range or an unresolved Maven property uses the package's default version, and
+the dependency table says so. When several licenses are listed, all of them
+apply. It flags copyleft licenses, dependencies with no identified license, and
+packages not on the registry. The project's own local and workspace packages
+(Cargo `path`, npm `workspace:`/`file:`, Gemfile `path:`) are marked `local`
+and never looked up. `--max-lookups` (default 40) caps calls, and
+`--include-dev` adds dev dependencies.
 
 **`company`** never researches on its own. You supply claims and figures, each
 with `sources: [{url, quote}]`. Claims without an https source are listed as
@@ -51,12 +56,19 @@ found on its page.
 confirmed, which makes it usable in CI. Pages are fetched only over https from
 public hosts (a redirect anywhere else is refused), up to 5 MB each. Matching
 is exact after evening out case, whitespace, curly quotes, dashes and HTML
-entities. PDFs are reported as needing a check by hand.
+entities. PDF sources (up to 25 MB and 500 pages) are read with the optional
+`pypdf` package (`pip install pypdf`). A word broken across lines with a hyphen
+matches with the hyphen dropped ("million") or kept ("cloud-based"). Without
+pypdf, an encrypted PDF, or a scanned PDF with no text, the source is reported
+as needing a check by hand rather than guessed.
 
 **`diff`** compares two reports made with `--format json`. Repo reports are
 compared check by check (gap, lead, both have, both lack). Company reports are
-shown side by side by kind, because deciding whether two free-text claims mean
-the same thing is left to you.
+shown side by side by kind. Above that is a list of suggested matches: pairs of
+sourced claims whose content words overlap (Dice score of 0.4 or more),
+one-to-one. A weakness of yours paired with a strength of theirs is a possible
+gap, and the reverse is a possible lead. These are suggestions to confirm. The
+overlap measure does not understand synonyms, so it can miss real matches.
 
 **`draft`** fetches the pages you name and asks Claude (`claude-opus-5-5` by
 default, `--model` to change it) to propose claims and figures, each with a

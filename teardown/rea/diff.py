@@ -1,13 +1,15 @@
 """Compare two teardowns (JSON from --format json) into a gap list.
 
 Repo reports are compared signal by signal, because each signal is a defined
-check. Company dossiers are free text, so they are shown side by side by kind:
-deciding whether two sentences describe the same thing is left to a person.
+check. Company dossiers are free text, so they are shown side by side by kind,
+with suggested matches from word overlap. A suggestion is a pointer for a
+person to confirm, never a merge: the verdict on a pair stays "possible".
 Only sourced claims are compared; unverified ones are counted, never matched.
 """
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 
 # Each check as (good signal, bad signal, label).
@@ -83,6 +85,57 @@ def diff_repos(ours: dict, theirs: dict) -> list[Row]:
 	return sorted(rows, key=lambda r: order[r.verdict])
 
 
+# ---------- suggested matches for free-text claims ----------
+
+STOPWORDS = set("""a an and are as at be been but by can do for from has have in into is it its of on or our
+over per so than that the their them they this to up was we were what when which while who will with you your
+more most less very also only just not no all any each other such""".split())
+MATCH_THRESHOLD = 0.4
+
+# (our kind, their kind) -> what a match between them means
+PAIRINGS = {
+	("strength", "strength"): "both have",
+	("weakness", "weakness"): "both lack",
+	("weakness", "strength"): "possible gap",
+	("strength", "weakness"): "possible lead",
+	("revenue_model", "revenue_model"): "similar model",
+	("fact", "fact"): "same topic",
+}
+
+
+def _terms(text: str) -> set[str]:
+	words = re.findall(r"[a-z0-9$%]+(?:\.[0-9]+)?", text.lower())
+	return {w[:-1] if len(w) > 4 and w.endswith("s") and not w.endswith("ss") else w
+		for w in words if w not in STOPWORDS and (len(w) > 2 or any(ch.isdigit() for ch in w))}
+
+
+def similarity(a: str, b: str) -> float:
+	"""Dice overlap of content words, 0..1. Cheap, transparent, and blind to synonyms: hence "suggested"."""
+	ta, tb = _terms(a), _terms(b)
+	return 2 * len(ta & tb) / (len(ta) + len(tb)) if ta and tb else 0.0
+
+
+def suggest_matches(ours: list[dict], theirs: list[dict], threshold: float = MATCH_THRESHOLD) -> list[dict]:
+	"""One-to-one pairs, best score first, across the kind pairings above."""
+	candidates = []
+	for i, a in enumerate(ours):
+		for j, b in enumerate(theirs):
+			meaning = PAIRINGS.get((a["kind"], b["kind"]))
+			if meaning:
+				score = similarity(a["text"], b["text"])
+				if score >= threshold:
+					candidates.append((score, i, j, meaning))
+	used_a, used_b, out = set(), set(), []
+	for score, i, j, meaning in sorted(candidates, key=lambda c: (-c[0], c[1], c[2])):
+		if i in used_a or j in used_b:
+			continue
+		used_a.add(i)
+		used_b.add(j)
+		out.append({"meaning": meaning, "score": round(score, 2), "ours": ours[i], "theirs": theirs[j],
+			"shared_words": sorted(_terms(ours[i]["text"]) & _terms(theirs[j]["text"]))})
+	return out
+
+
 def diff(ours: dict, theirs: dict) -> dict:
 	kind_a, kind_b = _report_kind(ours), _report_kind(theirs)
 	if kind_a != kind_b:
@@ -98,6 +151,7 @@ def diff(ours: dict, theirs: dict) -> dict:
 			by_kind[kind] = {side: [c for c in rep["ledger"]["sourced"] if c["kind"] == kind]
 				for side, rep in (("ours", ours), ("theirs", theirs))}
 		result["side_by_side"] = by_kind
+		result["suggested_matches"] = suggest_matches(ours["ledger"]["sourced"], theirs["ledger"]["sourced"])
 	return result
 
 
@@ -118,7 +172,19 @@ def diff_md(result: dict) -> str:
 		if gaps:
 			out += ["## Close the gaps", ""] + [f"{i}. {r.label}: they have \"{r.theirs_text}\"" for i, r in enumerate(gaps, 1)] + [""]
 	else:
-		out += ["Free-text claims are listed side by side; matching them is left to you.", ""]
+		matches = result.get("suggested_matches", [])
+		order = ["possible gap", "possible lead", "both lack", "both have", "similar model", "same topic"]
+		out += ["## Suggested matches", "",
+			f"Pairs whose wording overlaps (word overlap of {MATCH_THRESHOLD:.0%} or more). Suggestions only: confirm each one; synonyms are not detected.", ""]
+		if matches:
+			out += ["| Meaning | Score | Ours | Theirs | Shared words |", "|---|---|---|---|---|"]
+			for m in sorted(matches, key=lambda m: (order.index(m["meaning"]), -m["score"])):
+				src = lambda c: "".join(f" [src]({e['url']})" for e in c.get("evidence", [])[:1])
+				out.append(f"| {m['meaning']} | {m['score']:.2f} | [{m['ours']['kind']}] {m['ours']['text']}{src(m['ours'])} | "
+					f"[{m['theirs']['kind']}] {m['theirs']['text']}{src(m['theirs'])} | {', '.join(m['shared_words'])} |")
+			out.append("")
+		else:
+			out += ["No pairs overlap enough to suggest.", ""]
 		titles = {"strength": "Pros", "weakness": "Cons", "revenue_model": "How it makes money", "fact": "Facts"}
 		for kind, sides in result["side_by_side"].items():
 			if not sides["ours"] and not sides["theirs"]:
