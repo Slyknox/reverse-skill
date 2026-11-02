@@ -4,7 +4,7 @@
   python -m rea deps OWNER/NAME [--max-lookups N] [--include-dev] [--fixture FILE] [--registry-fixture FILE]
   python -m rea company DOSSIER.json [--format md|json] [--out FILE]
   python -m rea verify DOSSIER.json [--fixture PAGES.json]       (exit 3 if any quote is unconfirmed)
-  python -m rea diff OURS.json THEIRS.json                         (two reports from --format json)
+  python -m rea diff OURS.json THEIRS.json [--judge]               (two reports from --format json)
   python -m rea draft --entity NAME --source URL [--source URL ...]  (needs `pip install anthropic`)
   python -m rea rank FIGURES.json [--format md|json] [--out FILE]
 """
@@ -23,6 +23,7 @@ from .draft import DEFAULT_MODEL, DraftError, draft_dossier, sdk_complete
 from .deps import FixtureRegistry, Registry, deps_for_repo, teardown_deps
 from .evidence import EvidenceError
 from .figures import Figure
+from .judge import JudgeError
 from .github import Client, FixtureClient, GitHubError, NotFound
 from .repo_teardown import teardown_repo
 from .verify import Fetcher, FixtureFetcher
@@ -66,6 +67,8 @@ def main(argv: list[str] | None = None) -> int:
 	df = sub.add_parser("diff", help="compare two JSON teardowns into a gap list")
 	df.add_argument("ours")
 	df.add_argument("theirs")
+	df.add_argument("--judge", action="store_true", help="company dossiers: also ask Claude to propose matches the vocabulary misses (needs `pip install anthropic`)")
+	df.add_argument("--model", default=DEFAULT_MODEL)
 	dr = sub.add_parser("draft", help="draft a sourced dossier from web pages with Claude; every quote is checked on its page")
 	dr.add_argument("--entity", required=True)
 	dr.add_argument("--source", action="append", default=[], help="page URL (repeat for several)")
@@ -114,7 +117,7 @@ def main(argv: list[str] | None = None) -> int:
 			for f in res.failed_sources:
 				print(f"rea: could not fetch {f['url']}: {f['reason']}", file=sys.stderr)
 		elif args.cmd == "diff":
-			result = diff(_load(args.ours), _load(args.theirs))
+			result = diff(_load(args.ours), _load(args.theirs), sdk_complete(args.model) if args.judge else None)
 			if args.format == "md":
 				_write(diff_md(result), args.out)
 			else:
@@ -129,7 +132,7 @@ def main(argv: list[str] | None = None) -> int:
 	except NotFound as err:
 		print(f"rea: not found: {err}", file=sys.stderr)
 		return 2
-	except (GitHubError, EvidenceError, DraftError, ValueError, OSError) as err:
+	except (GitHubError, EvidenceError, DraftError, JudgeError, ValueError, OSError) as err:
 		print(f"rea: {err}", file=sys.stderr)
 		return 1
 	return 0

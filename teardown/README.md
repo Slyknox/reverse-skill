@@ -39,14 +39,21 @@ releases and bus factor. If GitHub truncates the listing, the report says so.
 npm, PyPI, crates.io and RubyGems directly, and Go, Maven and NuGet through
 deps.dev. Every answer links to the response it came from. deps.dev answers
 per version. A declared version that names one release is looked up as is. A
-range or an unresolved Maven property uses the package's default version, and
-the dependency table says so. When several licenses are listed, all of them
+Maven or NuGet range such as `[3.1,4.0)` resolves to the version the tool
+itself would pick from the published list: the highest for Maven, the lowest
+for NuGet. NuGet leaves out pre-releases unless a bound is one, and Maven, as
+Maven does, can pick a pre-release of the upper bound. An unresolved property
+uses the package's default version. The dependency table says which happened. When several licenses are listed, all of them
 apply. It flags copyleft licenses, dependencies with no identified license, and
 packages not on the registry. For Maven, a dependency without a version gets
 one the way Maven would: from the parent POM (read from the repository when
 `relativePath` points at it, else from Maven Central), from BOMs imported in
 `dependencyManagement`, with `${properties}` taken from the whole chain and
-the child's values winning. The table names the POM each version came from.
+the child's values winning. Profiles marked `activeByDefault` are applied, and
+the report says so, because Maven switches them off when another profile
+activates. Profiles that activate on the build machine (JDK, OS, a property, a
+file, `-P`) are listed as not applied. The table names the POM each version
+came from.
 BOMs whose groupId matches an unmanaged dependency are read first, and
 `--max-pom-fetches` (default 25) caps Maven Central reads. Anything left over
 is reported as unresolved, not guessed. The project's own local and workspace packages
@@ -82,7 +89,15 @@ one-to-one. Before scoring, a short published vocabulary (`CONCEPTS` in
 yours paired with a strength of theirs is a possible gap, and the reverse is a
 possible lead. An "opposite on" column names concepts the two claims state in
 opposite directions. These are suggestions to confirm. Wording outside the
-vocabulary still has to overlap word for word.
+vocabulary still has to overlap word for word, unless you add `--judge`.
+
+With `--judge` (company dossiers only, same setup as `draft`), the sourced
+claims the vocabulary left unmatched are sent to Claude, which proposes pairs
+by id. Code drops invented ids, claims already used, and pairs whose kinds are
+not a reported pairing. The meaning (gap, lead...) still comes from the two
+claims' kinds, not from the model. Model-proposed pairs have no score and
+show the model's one-line reason. With more than 300 claims on a side, nothing
+is sent.
 
 **`draft`** fetches the pages you name and asks Claude (`claude-opus-5-5` by
 default, `--model` to change it) to propose claims and figures, each with a

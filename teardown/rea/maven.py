@@ -55,43 +55,73 @@ class Pom:
 	managed: dict[str, str] = field(default_factory=dict)  # "g:a" -> raw version
 	imports: list[tuple[str, str, str]] = field(default_factory=list)  # raw g, a, version
 	dependencies: list[dict] = field(default_factory=list)
+	applied_profiles: list[str] = field(default_factory=list)  # activeByDefault profiles merged in
+	skipped_profiles: list[str] = field(default_factory=list)  # profiles that need the build machine to decide
 
 
-def parse_pom(text: str) -> Pom:
-	root = ET.fromstring(text)
-	fields = {_local(c.tag): c for c in root}
+def _txt(el, name):
+	child = next((c for c in el if _local(c.tag) == name), None)
+	if child is None:
+		return None
+	return (child.text or "").strip()
 
-	def txt(el, name):
-		child = next((c for c in el if _local(c.tag) == name), None)
-		if child is None:
-			return None
-		return (child.text or "").strip()
 
-	parent = None
-	if "parent" in fields:
-		p = fields["parent"]
-		rel = txt(p, "relativePath")
-		parent = (txt(p, "groupId") or "", txt(p, "artifactId") or "", txt(p, "version") or "", "../pom.xml" if rel is None else rel)
-	pom = Pom(txt(root, "groupId") or (parent[0] if parent else None), txt(root, "artifactId"),
-		txt(root, "version") or (parent[2] if parent else None), parent)
+def _read_section(el, pom: "Pom", override: bool) -> None:
+	"""Read properties, dependencyManagement and dependencies from <project> or a <profile>.
+
+	With override (a profile), its properties and managed versions replace the project's,
+	as Maven's profile injection does; dependencies are added.
+	"""
+	fields = {_local(c.tag): c for c in el}
 	if "properties" in fields:
-		pom.properties = {_local(p.tag): (p.text or "").strip() for p in fields["properties"]}
+		for p in fields["properties"]:
+			if override or _local(p.tag) not in pom.properties:
+				pom.properties[_local(p.tag)] = (p.text or "").strip()
 	dm = fields.get("dependencyManagement")
 	if dm is not None:
 		for deps in dm:
 			for dep in deps:
-				g, a, v = txt(dep, "groupId"), txt(dep, "artifactId"), txt(dep, "version")
+				g, a, v = _txt(dep, "groupId"), _txt(dep, "artifactId"), _txt(dep, "version")
 				if not (g and a):
 					continue
-				if txt(dep, "scope") == "import" and txt(dep, "type") == "pom":
+				if _txt(dep, "scope") == "import" and _txt(dep, "type") == "pom":
 					pom.imports.append((g, a, v or ""))
-				elif v:
-					pom.managed.setdefault(f"{g}:{a}", v)
+				elif v and (override or f"{g}:{a}" not in pom.managed):
+					pom.managed[f"{g}:{a}"] = v
 	if "dependencies" in fields:
 		for dep in fields["dependencies"]:
 			entry = {_local(c.tag): (c.text or "").strip() for c in dep}
 			if entry.get("groupId") and entry.get("artifactId"):
 				pom.dependencies.append(entry)
+
+
+def parse_pom(text: str) -> Pom:
+	"""Parse a POM, applying profiles marked activeByDefault.
+
+	Other profiles activate on the build machine (JDK, OS, a -D property, a file, -P),
+	which a teardown cannot know, so they are listed in skipped_profiles, not applied.
+	An activeByDefault profile is switched off when another profile activates; that is
+	also unknowable here, so it is applied and named in applied_profiles.
+	"""
+	root = ET.fromstring(text)
+	fields = {_local(c.tag): c for c in root}
+	parent = None
+	if "parent" in fields:
+		p = fields["parent"]
+		rel = _txt(p, "relativePath")
+		parent = (_txt(p, "groupId") or "", _txt(p, "artifactId") or "", _txt(p, "version") or "", "../pom.xml" if rel is None else rel)
+	pom = Pom(_txt(root, "groupId") or (parent[0] if parent else None), _txt(root, "artifactId"),
+		_txt(root, "version") or (parent[2] if parent else None), parent)
+	_read_section(root, pom, override=False)
+	for profile in fields.get("profiles", []):
+		name = _txt(profile, "id") or "(no id)"
+		activation = next((c for c in profile if _local(c.tag) == "activation"), None)
+		if activation is not None and (_txt(activation, "activeByDefault") or "").lower() == "true":
+			_read_section(profile, pom, override=True)
+			pom.applied_profiles.append(name)
+		else:
+			how = ", ".join(_local(c.tag) for c in activation) if activation is not None else "-P only"
+			pom.skipped_profiles.append(f"{name} ({how})")
 	return pom
 
 
@@ -134,6 +164,7 @@ class Resolver:
 		self.fetches = 0
 		self.fetched_urls: list[str] = []
 		self.problems: list[str] = []
+		self.notes: list[str] = []  # facts about what was applied, e.g. profiles
 		self.capped = 0  # POMs not read because the fetch cap was reached
 		self.skipped_boms = 0  # BOMs not tried: no shared groupId and past OTHER_BOM_BUDGET
 		self._central_cache: dict[str, Pom | None] = {}
