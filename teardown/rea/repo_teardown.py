@@ -17,8 +17,9 @@ from .tree import TEST_DIRS, Tree, load_tree
 
 PERMISSIVE = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "Unlicense", "MPL-2.0"}
 COPYLEFT = {"GPL-2.0", "GPL-3.0", "AGPL-3.0", "LGPL-2.1", "LGPL-3.0"}
-LOCKFILES = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock", "uv.lock",
-	"poetry.lock", "Pipfile.lock", "Cargo.lock", "go.sum", "Gemfile.lock", "composer.lock"}
+LOCKFILES = {"package-lock.json", "npm-shrinkwrap.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock", "uv.lock",
+	"poetry.lock", "pdm.lock", "Pipfile.lock", "Cargo.lock", "go.sum", "Gemfile.lock", "composer.lock", "pubspec.lock", "mix.lock",
+	"Package.resolved", "packages.lock.json"}
 
 # signal -> (action for the original build, measurable acceptance criterion)
 PLAN = {
@@ -46,6 +47,7 @@ PLAN = {
 	"deps_copyleft": ("decide", "Decide per copyleft dependency: replace it, isolate it behind a process boundary, or accept the source-release obligation in writing.", "Each copyleft dependency has a recorded decision."),
 	"deps_license_unknown": ("fix", "Resolve every dependency license the registry does not state; an unknown license is not a permission.", "Every runtime dependency has an identified license."),
 	"deps_licenses_clear": ("keep", "Keep a license check on new dependencies.", "A license allow-list enforced in CI."),
+	"deps_vulnerable": ("fix", "Upgrade, patch or replace each dependency with a known vulnerability, starting with the highest severity; add a vulnerability check to CI so new ones block merge.", "OSV.dev lists no advisory for any resolved dependency version."),
 	"docs_thin": ("fix", "Write a README that covers install, a first example and limits.", "README of 2 KB or more."),
 }
 

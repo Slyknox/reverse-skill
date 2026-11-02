@@ -6,6 +6,7 @@
   python -m rea verify DOSSIER.json [--fixture PAGES.json]       (exit 3 if any quote is unconfirmed)
   python -m rea diff OURS.json THEIRS.json [--judge]               (two reports from --format json)
   python -m rea draft --entity NAME --source URL [--source URL ...]  (needs `pip install anthropic`)
+  python -m rea report RESULT.json [--out FILE]                      (HTML page; or --format html on repo/deps/company/diff)
   python -m rea rank FIGURES.json [--format md|json] [--out FILE]
 """
 
@@ -16,7 +17,7 @@ import json
 import sys
 from dataclasses import asdict
 
-from . import render
+from . import render, report
 from .activation import BuildContext
 from .company import load_dossier_file
 from .diff import diff, diff_md
@@ -36,6 +37,16 @@ def _write(text: str, out: str | None) -> None:
 			fh.write(text if text.endswith("\n") else text + "\n")
 	else:
 		sys.stdout.write(text if text.endswith("\n") else text + "\n")
+
+
+def _emit(obj, fmt: str, md: str, out: str | None) -> None:
+	"""Write the Markdown, JSON or HTML form of a result object."""
+	if fmt == "md":
+		_write(md, out)
+	elif fmt == "json":
+		_write(render.to_json(obj), out)
+	else:
+		_write(report.render(json.loads(render.to_json(obj))), out)
 
 
 def _load(path: str):
@@ -65,6 +76,7 @@ def main(argv: list[str] | None = None) -> int:
 		sp.add_argument("--os-name", help="e.g. linux")
 		sp.add_argument("--os-arch", help="e.g. amd64, aarch64")
 		sp.add_argument("--env", action="append", default=[], help="NAME=value environment variable for env.NAME profile conditions")
+		sp.add_argument("--no-osv", action="store_true", help="skip the OSV.dev known-vulnerability check")
 	c = sub.add_parser("company", help="tear down a company or product from a sourced dossier")
 	c.add_argument("dossier")
 	c.add_argument("--verify", action="store_true", help="fetch each source and keep a claim only if its quote is on the page")
@@ -84,10 +96,13 @@ def main(argv: list[str] | None = None) -> int:
 	dr.add_argument("--model", default=DEFAULT_MODEL)
 	dr.add_argument("--pages-fixture", help="recorded pages (JSON: url -> text) instead of the network")
 	dr.add_argument("--out")
+	rp = sub.add_parser("report", help="self-contained HTML page from a JSON result of repo, deps, company or diff")
+	rp.add_argument("input")
+	rp.add_argument("--out")
 	k = sub.add_parser("rank", help="rank figures within each metric kind")
 	k.add_argument("figures")
 	for sp in (r, dp, c, v, df, k):
-		sp.add_argument("--format", choices=("md", "json"), default="md")
+		sp.add_argument("--format", choices=("md", "json", "html") if sp is not k and sp is not v else ("md", "json"), default="md")
 		sp.add_argument("--out")
 	args = p.parse_args(argv)
 
@@ -100,20 +115,20 @@ def main(argv: list[str] | None = None) -> int:
 		if args.cmd == "repo":
 			t = teardown_repo(client, args.repo)
 			if args.deps:
-				d = teardown_deps(client, t.repo, t.tree, t.top_level, registry, args.max_lookups, args.include_dev, args.max_pom_fetches, build)
+				d = teardown_deps(client, t.repo, t.tree, t.top_level, registry, args.max_lookups, args.include_dev, args.max_pom_fetches, build, not args.no_osv)
 				for claim in d.ledger.sourced + d.ledger.unverified:
 					t.ledger.add(claim)
-			_write(render.repo_md(t) if args.format == "md" else render.to_json(t), args.out)
+			_emit(t, args.format, render.repo_md(t), args.out)
 		elif args.cmd == "deps":
-			d = deps_for_repo(client, args.repo, registry, args.max_lookups, args.include_dev, args.max_pom_fetches, build)
-			_write(render.deps_md(d) if args.format == "md" else render.to_json(d), args.out)
+			d = deps_for_repo(client, args.repo, registry, args.max_lookups, args.include_dev, args.max_pom_fetches, build, not args.no_osv)
+			_emit(d, args.format, render.deps_md(d), args.out)
 		elif args.cmd in ("company", "verify"):
 			fetcher = None
 			if args.cmd == "verify" or args.verify:
 				fetcher = FixtureFetcher(_load(args.pages_fixture)) if args.pages_fixture else Fetcher()
 			t = load_dossier_file(args.dossier, fetcher)
 			if args.cmd == "company":
-				_write(render.company_md(t) if args.format == "md" else render.to_json(t), args.out)
+				_emit(t, args.format, render.company_md(t), args.out)
 			else:
 				text = "\n".join(render.checks_md(t.checks)) or "No sources to check."
 				_write(text if args.format == "md" else json.dumps([asdict(c) for c in t.checks], indent=2), args.out)
@@ -133,7 +148,9 @@ def main(argv: list[str] | None = None) -> int:
 			else:
 				if "rows" in result:
 					result["rows"] = [{**asdict(r), "verdict": r.verdict} for r in result["rows"]]
-				_write(json.dumps(result, indent=2), args.out)
+				_write(json.dumps(result, indent=2) if args.format == "json" else report.render(json.loads(json.dumps(result))), args.out)
+		elif args.cmd == "report":
+			_write(report.render(_load(args.input)), args.out)
 		else:
 			with open(args.figures, encoding="utf-8") as fh:
 				figures = [Figure.from_dict(f) for f in json.load(fh)["figures"]]

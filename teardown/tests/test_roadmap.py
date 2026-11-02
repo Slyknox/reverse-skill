@@ -207,7 +207,7 @@ class CliTests(unittest.TestCase):
 		fx = os.path.join(HERE, "fixtures")
 		code, out = self.run_cli("deps", "acme/strong", "--fixture", f"{fx}/strong_repo.json", "--registry-fixture", f"{fx}/strong_registry.json")
 		self.assertEqual(code, 0)
-		self.assertIn("| gpl-thing | `2.0.0` | npm | runtime | packages/api/package.json |", out)
+		self.assertIn("| gpl-thing | `2.0.0` |  | npm | runtime | packages/api/package.json |", out)
 		code, out = self.run_cli("verify", os.path.join(HERE, "..", "examples", "dossier-template.json"), "--pages-fixture", f"{fx}/strong_registry.json")
 		self.assertEqual(code, 3)
 		self.assertIn("0 of", out)

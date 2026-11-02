@@ -24,13 +24,18 @@ from dataclasses import dataclass, field
 
 from .evidence import Claim, Evidence, Ledger
 from .github import NotFound
+from .lockfiles import LOCKFILE_ECOSYSTEM, parse_lockfile
+from .manifests import composer_pick, parse_composer, parse_mix, parse_package_swift, parse_pubspec
 from .maven import Resolver, parse_pom, resolve_dependencies, wanted_artifacts
 from .tree import Tree
 from .nuget import pick as nuget_pick
+from .osv import OsvResult, check as osv_check, claims as osv_claims
 from .versions import is_range, pick
 
 MANIFESTS = {"package.json": "npm", "pyproject.toml": "pypi", "Cargo.toml": "crates", "go.mod": "go",
-	"pom.xml": "maven", "Gemfile": "rubygems"}
+	"pom.xml": "maven", "Gemfile": "rubygems", "composer.json": "packagist", "Package.swift": "swift",
+	"pubspec.yaml": "pub", "mix.exs": "hex"}
+MAX_LOCKFILES = 10
 # Ecosystems whose licenses come from deps.dev, which needs a version (system name on deps.dev).
 DEPS_DEV = {"go": "go", "maven": "maven", "nuget": "nuget"}
 REQUIREMENTS = re.compile(r"^requirements[\w.-]*\.txt$")
@@ -90,7 +95,7 @@ class Dependency:
 	name: str
 	spec: str
 	ecosystem: str
-	scope: str  # runtime | dev | optional | indirect | local (the project's own code, never looked up)
+	scope: str  # runtime | dev | optional | indirect | local (the project's own code) | vcs (from a git repository); local and vcs are never looked up
 	manifest: str
 	license: str | None = None
 	license_class: str = "unknown"
@@ -99,6 +104,9 @@ class Dependency:
 	on_registry: bool = True
 	license_note: str | None = None
 	version_from: str | None = None  # where a version that is not written in the manifest came from
+	locked: str | None = None  # exact version from a lockfile beside the manifest, when the spec is not exact
+	lock_source: str | None = None  # the lockfile path
+	url: str | None = None  # Swift: the package's git URL
 	manifest_url: str | None = None
 
 
@@ -107,7 +115,10 @@ class DepsTeardown:
 	repo: str
 	manifests: list[str] = field(default_factory=list)
 	dependencies: list[Dependency] = field(default_factory=list)
+	lockfiles: list[str] = field(default_factory=list)
+	lockfiles_unread: list[str] = field(default_factory=list)
 	not_checked: int = 0
+	osv: OsvResult | None = None
 	ledger: Ledger = field(default_factory=Ledger)
 
 
@@ -184,6 +195,12 @@ def parse_manifest(path: str, text: str, resolver=None) -> list[Dependency]:
 					add(body[0], body[1], "go", "indirect" if "// indirect" in line else "runtime")
 	elif name == "pom.xml":
 		out.extend(_parse_pom(path, text, resolver))
+	elif name in ("composer.json", "Package.swift", "pubspec.yaml", "mix.exs"):
+		parser = {"composer.json": parse_composer, "Package.swift": parse_package_swift, "pubspec.yaml": parse_pubspec, "mix.exs": parse_mix}[name]
+		for n, spec, scope, extra in parser(text):
+			dep = Dependency(n, spec, MANIFESTS[name], scope, path)
+			dep.url = extra.get("url")
+			out.append(dep)
 	elif name.endswith(".csproj"):
 		root = ET.fromstring(text)
 		for ref in root.iter():
@@ -254,6 +271,15 @@ class Registry:
 			return None
 
 
+	def post_json(self, url: str, body: dict):
+		req = urllib.request.Request(url, data=json.dumps(body).encode(), method="POST",
+			headers={"User-Agent": "rea-teardown/0.8 (vulnerability lookup)", "Content-Type": "application/json", "Accept": "application/json"})
+		try:
+			with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+				return json.load(resp)
+		except (urllib.error.URLError, TimeoutError, json.JSONDecodeError):
+			return None
+
 	def get_text(self, url: str, max_bytes: int = 2_000_000) -> str | None:
 		"""Plain text (Maven POMs). Retries 429 and 503 up to three times with growing waits, honouring Retry-After up to 10 s."""
 		import time
@@ -287,14 +313,24 @@ class FixtureRegistry:
 		value = self.responses.get(url)
 		return value if isinstance(value, str) else None
 
+	def post_json(self, url: str, body: dict):
+		"""Answers come from the key "POST <url>": one response, or a callable taking the body."""
+		value = self.responses.get("POST " + url)
+		return value(body) if callable(value) else value
+
 
 _EXACT = re.compile(r"^v?\d+(\.\d+)*([-+.][0-9A-Za-z.+-]+)?$")
 
 
 def exact_version(dep: Dependency) -> str | None:
 	"""The declared version if it names one release; None for ranges, wildcards and unresolved properties."""
-	v = dep.spec.strip().strip("[]")
+	v = dep.spec.strip().strip("[]").lstrip("=")
 	return v if _EXACT.match(v) and "," not in v else None
+
+
+def effective_version(dep: Dependency) -> str | None:
+	"""The version a lookup should be about: the locked one, else an exact declared one."""
+	return dep.locked or exact_version(dep)
 
 
 def deps_dev_url(dep: Dependency, version: str | None = None) -> str:
@@ -306,7 +342,7 @@ def deps_dev_url(dep: Dependency, version: str | None = None) -> str:
 def resolve_license(dep: Dependency, registry, budget: int) -> tuple[str | None, str | None, bool, str | None, int]:
 	"""(license, source url, found on registry, note, lookups used); budget is how many lookups may be spent."""
 	if dep.ecosystem in DEPS_DEV:
-		version = exact_version(dep)
+		version = effective_version(dep)
 		if version:
 			url = deps_dev_url(dep, version)
 			data = registry.get_json(url)
@@ -339,28 +375,101 @@ def resolve_license(dep: Dependency, registry, budget: int) -> tuple[str | None,
 		data = registry.get_json(url)
 		lic = ", ".join(data.get("licenses") or []) or None if isinstance(data, dict) else None
 		return lic, url, data is not None, note, 2
+	version = effective_version(dep)
+	q = urllib.parse.quote(dep.name, safe="@/")
 	if dep.ecosystem == "rubygems":
-		url = f"https://rubygems.org/api/v1/gems/{urllib.parse.quote(dep.name, safe='')}.json"
+		if version:
+			url = f"https://rubygems.org/api/v2/rubygems/{q}/versions/{urllib.parse.quote(version, safe='')}.json"
+			data = registry.get_json(url)
+			if isinstance(data, dict):
+				return ", ".join(data.get("licenses") or []) or None, url, True, None, 1
+			return None, url, False, f"version {version} not found on rubygems.org", 1
+		url = f"https://rubygems.org/api/v1/gems/{q}.json"
 		data = registry.get_json(url)
 		lic = ", ".join(data.get("licenses") or []) or None if isinstance(data, dict) else None
-		note = (f"declared version {dep.spec!r} is not one release; license of the latest release {data.get('version')}"
-			if isinstance(data, dict) and not exact_version(dep) else None)
+		note = f"declared version {dep.spec!r} is not one release; license of the latest release {data.get('version')}" if isinstance(data, dict) else None
 		return lic, url, data is not None, note, 1
-	url = registry_url(dep)
+	if dep.ecosystem == "packagist":
+		url = f"https://repo.packagist.org/p2/{q}.json"
+		data = registry.get_json(url)
+		releases = _packagist_releases(data, dep.name)
+		if not releases:
+			return None, url, data is not None, None, 1
+		hit = next((r for r in releases if version and r.get("version", "").lstrip("v") == version.lstrip("v")), None)
+		note = None
+		if hit is None:
+			chosen = composer_pick(dep.spec, [r.get("version", "") for r in releases])
+			if chosen is None:
+				return None, url, True, f"no stable release satisfies the declared constraint {dep.spec!r}", 1
+			hit = next(r for r in releases if r.get("version") == chosen)
+			note = f"declared constraint {dep.spec!r}; license of {chosen}, the highest stable release it allows, as Composer picks"
+		return ", ".join(hit.get("license") or []) or None, url, True, note, 1
+	if dep.ecosystem == "pub":
+		url = f"https://pub.dev/api/packages/{q}/score"
+		data = registry.get_json(url)
+		if not isinstance(data, dict):
+			return None, url, False, None, 1
+		tags = [t[len("license:"):] for t in data.get("tags", []) if t.startswith("license:") and t not in ("license:fsf-libre", "license:osi-approved", "license:unknown")]
+		lic = ", ".join(_PUB_LICENSES.get(t, t.upper()) for t in tags) or None
+		return lic, url, True, "pub.dev reports the license of the latest release only", 1
+	if dep.ecosystem == "hex":
+		url = f"https://hex.pm/api/packages/{q}"
+		data = registry.get_json(url)
+		if not isinstance(data, dict):
+			return None, url, False, None, 1
+		lic = ", ".join((data.get("meta") or {}).get("licenses") or []) or None
+		return lic, url, True, "hex.pm reports the package's licenses, not per release", 1
+	if dep.ecosystem == "swift":
+		if "/" not in dep.name or (dep.url and "github.com" not in dep.url):
+			return None, None, True, "no registry: a Swift package is a git repository, and only GitHub repositories are looked up", 0
+		url = f"https://api.github.com/repos/{q}"
+		data = registry.get_json(url)
+		if not isinstance(data, dict):
+			return None, url, False, None, 1
+		spdx = (data.get("license") or {}).get("spdx_id")
+		lic = None if spdx in (None, "NOASSERTION") else spdx
+		return lic, url, True, "license GitHub detects on the repository's default branch, not the pinned release", 1
+	url = registry_url(dep, version)
 	if url is None:
 		return None, None, True, "no license API for this ecosystem", 0
 	data = registry.get_json(url)
+	if version and data is None:
+		# The registry has no such version (or the fixture has none): fall back to the package's latest, and say so.
+		latest = registry_url(dep)
+		data = registry.get_json(latest)
+		note = f"version {version} not found on the registry; license of the latest release" if data is not None else None
+		return license_from(dep, data), latest, data is not None, note, 2
 	return license_from(dep, data), url, data is not None, None, 1
 
 
-def registry_url(dep: Dependency) -> str | None:
+_PUB_LICENSES = {"mit": "MIT", "apache-2.0": "Apache-2.0", "bsd-3-clause": "BSD-3-Clause", "bsd-2-clause": "BSD-2-Clause",
+	"isc": "ISC", "mpl-2.0": "MPL-2.0", "gpl-3.0": "GPL-3.0", "gpl-2.0": "GPL-2.0", "lgpl-3.0": "LGPL-3.0", "agpl-3.0": "AGPL-3.0",
+	"unlicense": "Unlicense", "cc0-1.0": "CC0-1.0", "zlib": "Zlib", "0bsd": "0BSD"}
+
+
+def _packagist_releases(data, name: str) -> list[dict]:
+	"""Expand Packagist's minified p2 list: each entry carries only the fields that changed from the previous one."""
+	if not isinstance(data, dict):
+		return []
+	raw = (data.get("packages") or {}).get(name) or []
+	out, carried = [], {}
+	for entry in raw:
+		carried = {**carried, **{k: v for k, v in entry.items() if k != "__unset"}}
+		for k in entry.get("__unset", []):
+			carried.pop(k, None)
+		out.append(dict(carried))
+	return out
+
+
+def registry_url(dep: Dependency, version: str | None = None) -> str | None:
 	q = urllib.parse.quote(dep.name, safe="@")
+	v = urllib.parse.quote(version, safe="") if version else None
 	if dep.ecosystem == "npm":
-		return f"https://registry.npmjs.org/{q}/latest"
+		return f"https://registry.npmjs.org/{q}/{v or 'latest'}"
 	if dep.ecosystem == "pypi":
-		return f"https://pypi.org/pypi/{q}/json"
+		return f"https://pypi.org/pypi/{q}/{v}/json" if v else f"https://pypi.org/pypi/{q}/json"
 	if dep.ecosystem == "crates":
-		return f"https://crates.io/api/v1/crates/{q}"
+		return f"https://crates.io/api/v1/crates/{q}/{v}" if v else f"https://crates.io/api/v1/crates/{q}"
 	return None
 
 
@@ -384,6 +493,8 @@ def license_from(dep: Dependency, data) -> str | None:
 					return CLASSIFIERS[label]
 		return None
 	if dep.ecosystem == "crates":
+		if isinstance(data.get("version"), dict):  # /crates/{name}/{version}
+			return data["version"].get("license")
 		versions = data.get("versions") or []
 		return versions[0].get("license") if versions else None
 	return None
@@ -392,7 +503,7 @@ def license_from(dep: Dependency, data) -> str | None:
 # ---------- teardown ----------
 
 def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], registry,
-		max_lookups: int = 40, include_dev: bool = False, max_pom_fetches: int = 25, build=None) -> DepsTeardown:
+		max_lookups: int = 40, include_dev: bool = False, max_pom_fetches: int = 25, build=None, osv: bool = True) -> DepsTeardown:
 	base = f"/repos/{repo}"
 	t = DepsTeardown(repo=repo)
 	files = set(tree.files) if tree is not None else set(top_level)
@@ -434,13 +545,15 @@ def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], reg
 			dep.manifest_url = resp.url
 		t.dependencies.extend(deps)
 
+	_pin_from_lockfiles(t, tree, top_level, load_repo)
+
 	seen: dict[tuple, tuple] = {}
 	lookups = 0
 	skipped: set[tuple] = set()
 	for dep in t.dependencies:
-		if dep.scope == "local" or (dep.scope not in ("runtime", "optional") and not include_dev):
+		if dep.scope in ("local", "vcs") or (dep.scope not in ("runtime", "optional") and not include_dev):
 			continue
-		key = (dep.ecosystem, dep.name.lower(), dep.spec if dep.ecosystem in DEPS_DEV else "")
+		key = (dep.ecosystem, dep.name.lower(), effective_version(dep) or dep.spec)
 		if key not in seen:
 			if lookups >= max_lookups:
 				skipped.add(key)
@@ -456,6 +569,11 @@ def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], reg
 		dep.looked_up = True
 
 	t.not_checked = len(skipped)
+	if osv:
+		candidates = [d for d in t.dependencies if d.scope in ("runtime", "optional") or include_dev]
+		t.osv = osv_check(candidates, registry, effective_version)
+		for claim in osv_claims(t.osv, f"https://api.github.com/repos/{repo}"):
+			t.ledger.add(claim)
 	problems = resolver.summary()
 	if problems:
 		t.ledger.add(Claim("fact", "Maven versions left unresolved: " + "; ".join(problems[:5])
@@ -473,9 +591,36 @@ def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], reg
 	return t
 
 
+def _pin_from_lockfiles(t: DepsTeardown, tree, top_level: set[str], load_repo) -> None:
+	"""Pin each dependency with a non-exact spec to the version in a lockfile beside its manifest, else at the root."""
+	paths = tree.files if tree is not None else sorted(top_level)
+	locks = [p for p in paths if p.rsplit("/", 1)[-1] in LOCKFILE_ECOSYSTEM]
+	locks = sorted(locks, key=lambda p: (p.count("/"), p))[:MAX_LOCKFILES]
+	index: dict[tuple[str, str], tuple[str, dict[str, str]]] = {}  # (dir, ecosystem) -> (path, versions)
+	for path in locks:
+		text = load_repo(path)
+		if text is None:
+			continue
+		versions = parse_lockfile(path.rsplit("/", 1)[-1], text)
+		if not versions:
+			t.lockfiles_unread.append(path)
+			continue
+		t.lockfiles.append(path)
+		index.setdefault((posixpath.dirname(path), LOCKFILE_ECOSYSTEM[path.rsplit("/", 1)[-1]]), (path, versions))
+	for dep in t.dependencies:
+		if dep.scope in ("local", "vcs") or exact_version(dep):
+			continue
+		for where in (posixpath.dirname(dep.manifest), ""):
+			hit = index.get((where, dep.ecosystem))
+			if hit and dep.name.lower() in hit[1]:
+				dep.locked, dep.lock_source = hit[1][dep.name.lower()], hit[0]
+				dep.version_from = dep.version_from or f"locked in {hit[0]}"
+				break
+
+
 def _claims(t: DepsTeardown) -> None:
 	if not t.manifests:
-		t.ledger.add(Claim("fact", "No dependency manifests found (package.json, pyproject.toml, requirements*.txt, Cargo.toml, go.mod, pom.xml, *.csproj, Gemfile).",
+		t.ledger.add(Claim("fact", "No dependency manifests found (package.json, pyproject.toml, requirements*.txt, Cargo.toml, go.mod, pom.xml, *.csproj, Gemfile, composer.json, Package.swift, pubspec.yaml, mix.exs).",
 			[Evidence(f"https://api.github.com/repos/{t.repo}")]))
 		return
 	by_scope: dict[str, int] = {}
@@ -486,6 +631,12 @@ def _claims(t: DepsTeardown) -> None:
 	t.ledger.add(Claim("fact", f"{len(t.dependencies)} declared dependencies ({summary}) in {len(t.manifests)} manifest(s): {', '.join(t.manifests)}.",
 		[Evidence(u) for u in manifest_urls[:5]] or [Evidence(f"https://api.github.com/repos/{t.repo}")]))
 
+	pinned = [d for d in t.dependencies if d.locked]
+	if t.lockfiles:
+		t.ledger.add(Claim("fact", f"{len(pinned)} of {len(t.dependencies)} dependencies were pinned to the version in a lockfile ({', '.join(t.lockfiles)}); "
+			"their license and vulnerability lookups are about that version.", [Evidence(u) for u in manifest_urls[:3]]))
+	if t.lockfiles_unread:
+		t.ledger.add(Claim("fact", f"Lockfile(s) found but not read (unrecognised shape): {', '.join(t.lockfiles_unread)}.", [Evidence(u) for u in manifest_urls[:1]]))
 	checked = [d for d in t.dependencies if d.looked_up]
 	copyleft = [d for d in checked if d.license_class == "copyleft"]
 	weak = [d for d in checked if d.license_class == "weak_copyleft"]
@@ -519,7 +670,7 @@ def _claims(t: DepsTeardown) -> None:
 			[Evidence(u) for u in manifest_urls[:1]]))
 
 
-def deps_for_repo(client, repo: str, registry, max_lookups: int = 40, include_dev: bool = False, max_pom_fetches: int = 25, build=None) -> DepsTeardown:
+def deps_for_repo(client, repo: str, registry, max_lookups: int = 40, include_dev: bool = False, max_pom_fetches: int = 25, build=None, osv: bool = True) -> DepsTeardown:
 	"""Standalone entry point: reads the default branch and file listing, then the manifests."""
 	from .tree import load_tree
 
@@ -531,4 +682,4 @@ def deps_for_repo(client, repo: str, registry, max_lookups: int = 40, include_de
 	top = set()
 	if tree is None:
 		top = {e["name"] for e in client.get(f"{base}/contents").data if isinstance(e, dict)}
-	return teardown_deps(client, meta.get("full_name", repo), tree, top, registry, max_lookups, include_dev, max_pom_fetches, build)
+	return teardown_deps(client, meta.get("full_name", repo), tree, top, registry, max_lookups, include_dev, max_pom_fetches, build, osv)
