@@ -1,6 +1,6 @@
 # Reverse Engineer Anything (rea): spec
 
-Status: 0.6.0, 2026-11-02 (five roadmap rounds built). Self-contained tool. It is not part of the
+Status: 0.7.0, 2026-11-02 (six roadmap rounds built). Self-contained tool. It is not part of the
 reverse-skill security router and is not wired into `skills/config/routing.json`.
 
 ## Problem
@@ -46,6 +46,8 @@ that prompted this tool showed the four usual faults:
 | A model judge only proposes pairs by id among unmatched sourced claims; ids, reuse and kind pairings are checked in code; nothing is sent past the size limit | `judge.judge_matches` | `test_model_adds_pairs_the_vocabulary_misses_and_only_sees_unmatched_claims`, `test_invented_ids_reuse_and_disallowed_kind_pairs_are_dropped`, `test_nothing_sent_when_too_many_claims_or_nothing_left` |
 | Maven version order matches Maven 3.9.9's ComparableVersion on every recorded pair | `versions.maven_compare` | `test_every_recorded_pair_matches_maven`, `test_maven_test_suite_orders` |
 | Profiles are evaluated against the build context given; an undecided condition is unknown, never assumed; activeByDefault is a fallback | `activation.evaluate`, `maven.parse_pom` | `test_conditions_with_a_full_context`, `test_default_profile_applies_only_when_nothing_else_is_on`, `test_unknown_conditions_are_reported_not_guessed` |
+| `env.X` conditions use only the variables given with --env; `packaging` uses the POM's own packaging | `activation._property`, `activation._packaging` | `test_env_conditions_use_only_listed_variables`, `test_packaging_condition_uses_the_poms_packaging` |
+| NuGet ordering, ranges, floats and best match follow NuGet.Versioning; every extracted row of its unit tests passes | `nuget` | `NuGetTestSuiteTests`, `NuGetBestMatchTests` |
 
 ## What "better" means here
 
@@ -107,8 +109,12 @@ Built in 0.6.0:
 15. Maven profile activation evaluated against a build context you give (-P, -D, --jdk, --os-*), with file conditions checked against the repository.
 16. Maven version order ported from Maven 3.9.9's ComparableVersion and checked against that class on 4,000 recorded pairs (all 323,610 pairs of an 805-version corpus matched during the build); the recorder is `tests/tools/maven_order/regenerate.py`. Maven's order is not transitive in some edge cases; the port reproduces that, pair by pair.
 
+Built in 0.7.0:
+
+17. `env.X` profile conditions from `--env NAME=value`, and Maven 4 `packaging` conditions from the POM itself.
+18. NuGet: a port of NuGet.Versioning (version parsing and ordering, one-interval ranges, floating versions, IsBetter/FindBestMatch), checked against 144 InlineData rows from NuGet's own unit tests (`tests/tools/nuget_cases/extract.py` rebuilds the fixture). Running NuGet's real library was not possible in the build session, so this is checked against NuGet's test data, not against the library itself as Maven's port was.
+
 Not yet built:
 
 - `draft` and `diff --judge` have not been run against the live API (no Anthropic credential in the build session); both are tested with a fake model client, and SDK 2.3.0 accepted the request shape.
-- Environment-variable (`env.X`) profile conditions and Maven 4's `packaging` condition are reported as unknown.
-- NuGet order follows SemVer 2.0 precedence (checked against the semver.org example) rather than a port of NuGet's own code.
+- A differential run against the real NuGet.Versioning library (needs a .NET SDK).

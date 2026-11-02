@@ -40,8 +40,11 @@ npm, PyPI, crates.io and RubyGems directly, and Go, Maven and NuGet through
 deps.dev. Every answer links to the response it came from. deps.dev answers
 per version. A declared version that names one release is looked up as is. A
 Maven or NuGet range such as `[3.1,4.0)` resolves to the version the tool
-itself would pick from the published list (Maven's order is a port of Maven
-3.9.9's ComparableVersion, checked pair by pair against that class): the highest for Maven, the lowest
+itself would pick from the published list. Maven's order is a port of Maven
+3.9.9's ComparableVersion, checked pair by pair against that class. NuGet's
+handling is a port of NuGet.Versioning, checked against NuGet's own unit-test
+data, and includes floating versions such as `3.*` and `4.*-*`, which take the
+highest match: the highest for Maven, the lowest
 for NuGet. NuGet leaves out pre-releases unless a bound is one, and Maven, as
 Maven does, can pick a pre-release of the upper bound. An unresolved property
 uses the package's default version. The dependency table says which happened. When several licenses are listed, all of them
@@ -54,7 +57,10 @@ the child's values winning. The table names the POM each version came from.
 
 Maven profiles are applied the way Maven would for a build you describe:
 `-P id` / `-P !id`, `-D name=value`, `--jdk 21`, `--os-family unix`,
-`--os-name`, `--os-arch`. JDK prefixes and ranges, OS, property and file
+`--os-name`, `--os-arch`, and `--env NAME=value` for `env.NAME` conditions. An
+environment variable you don't list is unknown, not absent. Maven 4's
+`packaging` condition is checked against the POM's own packaging, which is
+`jar` when the POM doesn't set one. JDK prefixes and ranges, OS, property and file
 conditions are evaluated. File conditions are checked against the repository's
 file listing, and all conditions in one profile must hold. A condition your
 flags do not decide is "unknown". Such a profile is not applied, and the report
