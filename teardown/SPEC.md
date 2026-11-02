@@ -1,6 +1,6 @@
 # Reverse Engineer Anything (rea): spec
 
-Status: 0.2.0, 2026-11-02 (roadmap items 1 to 5 built). Self-contained tool. It is not part of the
+Status: 0.3.0, 2026-11-02 (two roadmap rounds built). Self-contained tool. It is not part of the
 reverse-skill security router and is not wired into `skills/config/routing.json`.
 
 ## Problem
@@ -34,6 +34,10 @@ that prompted this tool showed the four usual faults:
 | With `--verify`, a claim stays sourced only if every quote is found on its fetched page; only https on public hosts is fetched | `verify`, `company.load_dossier(fetcher=...)` | `test_company_verify_moves_unconfirmed_claims_to_unverified`, `test_live_fetcher_refuses_non_public_and_plain_http` |
 | Diffs compare only sourced claims and refuse to compare different report kinds | `diff` | `test_repo_gaps_and_leads`, `test_kind_mismatch_and_bad_input_are_refused` |
 | A model-drafted claim keeps a source only if its quote is on a page the user named; nothing is truncated | `draft.draft_dossier` | `test_only_quotes_found_on_their_page_keep_a_source`, `test_refuses_without_pages_and_never_truncates` |
+| Go, Maven and NuGet licenses come from deps.dev for the declared version; a range uses the default version and says so; several licenses all apply | `deps.resolve_license` | `test_exact_version_is_one_lookup`, `test_range_falls_back_to_default_version_and_says_so`, `test_multiple_licenses_are_all_applied` |
+| The project's own local and workspace packages are never looked up | `deps.parse_manifest` | `test_local_path_dependencies_are_marked_local` |
+| PDF quotes are checked on the whole document or not at all; a missing reader is reported, not guessed | `verify.pdf_to_text` | `test_quotes_match_across_line_end_hyphens_in_both_readings`, `test_missing_pypdf_is_reported_not_guessed` |
+| Company diff suggests one-to-one matches from sourced claims only, labelled as suggestions | `diff.suggest_matches` | `test_pairs_are_one_to_one_and_cross_kind_pairs_mean_gap_or_lead`, `test_company_diff_shows_suggestions_from_sourced_claims_only` |
 
 ## What "better" means here
 
@@ -72,9 +76,15 @@ Built in 0.2.0:
 4. `diff`: two teardowns into a gap list.
 5. `draft`: Claude proposes claims; each goes through the same quote check, so an unconfirmed claim stays unverified.
 
+Built in 0.3.0:
+
+6. License lookups for Go, Maven and NuGet (deps.dev) and RubyGems (rubygems.org); local and workspace packages excluded.
+7. PDF sources for `verify` through the optional pypdf package.
+8. Suggested matches between free-text claims in company diffs.
+
 Not yet built:
 
-- License lookups for Go modules (there is no registry license API) and for Maven, RubyGems and NuGet.
-- PDF sources for `verify` (reported today as needing a check by hand).
-- Matching free-text company claims across two dossiers in `diff`.
-- `draft` has not been run against the live API from the build session (no API key there); the request shape was accepted by SDK 2.3.0.
+- `draft` has not been run against the live API (no API key in the build session); SDK 2.3.0 accepted the request shape.
+- Suggested matches use word overlap only; a synonym-aware matcher would need a model or an embedding service.
+- Maven parent POMs and BOM imports are not followed, so a version inherited from a parent shows as unresolved and uses the default version.
+- OCR for scanned PDFs.

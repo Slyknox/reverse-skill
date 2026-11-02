@@ -1,10 +1,12 @@
 """Dependency teardown: manifests -> dependency list -> license per dependency.
 
 Manifests are read through the GitHub contents API. Licenses come from the
-package registry (npm, PyPI, crates.io), each with the registry URL that said
-so. Go modules have no license API, so their license is reported as not looked
-up rather than guessed. Lookups are capped; anything past the cap is counted
-and listed as not checked.
+package registry (npm, PyPI, crates.io, RubyGems) or, for Go, Maven and NuGet,
+from deps.dev, each with the URL that said so. deps.dev answers per version: a
+declared version that names one release is looked up as is; a range or an
+unresolved property falls back to the package's default version, and the
+dependency says so. Lookups are capped; anything past the cap is counted and
+listed as not checked.
 """
 
 from __future__ import annotations
@@ -13,6 +15,7 @@ import base64
 import json
 import re
 import tomllib
+import xml.etree.ElementTree as ET
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -22,7 +25,10 @@ from .evidence import Claim, Evidence, Ledger
 from .github import NotFound
 from .tree import Tree
 
-MANIFESTS = {"package.json": "npm", "pyproject.toml": "pypi", "Cargo.toml": "crates", "go.mod": "go"}
+MANIFESTS = {"package.json": "npm", "pyproject.toml": "pypi", "Cargo.toml": "crates", "go.mod": "go",
+	"pom.xml": "maven", "Gemfile": "rubygems"}
+# Ecosystems whose licenses come from deps.dev, which needs a version (system name on deps.dev).
+DEPS_DEV = {"go": "go", "maven": "maven", "nuget": "nuget"}
 REQUIREMENTS = re.compile(r"^requirements[\w.-]*\.txt$")
 MAX_MANIFESTS = 10
 
@@ -80,13 +86,14 @@ class Dependency:
 	name: str
 	spec: str
 	ecosystem: str
-	scope: str  # runtime | dev | optional | indirect
+	scope: str  # runtime | dev | optional | indirect | local (the project's own code, never looked up)
 	manifest: str
 	license: str | None = None
 	license_class: str = "unknown"
 	license_source: str | None = None
 	looked_up: bool = False
 	on_registry: bool = True
+	license_note: str | None = None
 	manifest_url: str | None = None
 
 
@@ -123,7 +130,8 @@ def parse_manifest(path: str, text: str) -> list[Dependency]:
 		data = json.loads(text)
 		for key, scope in (("dependencies", "runtime"), ("optionalDependencies", "optional"), ("devDependencies", "dev")):
 			for n, spec in (data.get(key) or {}).items():
-				add(n, spec, "npm", scope)
+				local = isinstance(spec, str) and spec.startswith(("file:", "link:", "workspace:", "portal:"))
+				add(n, spec, "npm", "local" if local else scope)
 	elif name == "pyproject.toml":
 		data = tomllib.loads(text)
 		project = data.get("project", {})
@@ -151,7 +159,10 @@ def parse_manifest(path: str, text: str) -> list[Dependency]:
 		data = tomllib.loads(text)
 		for key, scope in (("dependencies", "runtime"), ("dev-dependencies", "dev"), ("build-dependencies", "dev")):
 			for n, spec in (data.get(key) or {}).items():
-				add(n, spec if isinstance(spec, str) else spec.get("version", "*") if isinstance(spec, dict) else "*", "crates", scope)
+				if isinstance(spec, dict) and "path" in spec:
+					add(n, f"path = {spec['path']}", "crates", "local")
+				else:
+					add(n, spec if isinstance(spec, str) else spec.get("version", "*") if isinstance(spec, dict) else "*", "crates", scope)
 	elif name == "go.mod":
 		in_block = False
 		for raw in text.splitlines():
@@ -166,12 +177,66 @@ def parse_manifest(path: str, text: str) -> list[Dependency]:
 				body = line.removeprefix("require ").split("//")[0].split()
 				if len(body) >= 2:
 					add(body[0], body[1], "go", "indirect" if "// indirect" in line else "runtime")
+	elif name == "pom.xml":
+		out.extend(_parse_pom(path, text))
+	elif name.endswith(".csproj"):
+		root = ET.fromstring(text)
+		for ref in root.iter():
+			if _local(ref.tag) == "PackageReference" and ref.get("Include"):
+				version = ref.get("Version") or next((c.text for c in ref if _local(c.tag) == "Version"), None)
+				add(ref.get("Include"), (version or "").strip() or "*", "nuget", "runtime")
+	elif name == "Gemfile":
+		groups: list[bool] = []  # one entry per open `group ... do` block: True if it is a dev/test group
+		for raw in text.splitlines():
+			line = raw.split("#", 1)[0].strip()
+			if re.match(r"^group\b.*\bdo$", line):
+				groups.append(bool(re.search(r":(development|test)\b", line)))
+				continue
+			if line == "end" and groups:
+				groups.pop()
+				continue
+			m = re.match(r"""^gem\s+['"]([^'"]+)['"](?:\s*,\s*['"]([^'"]+)['"])?""", line)
+			if m:
+				dev = any(groups) or bool(re.search(r"group:\s*\[?:(development|test)\b", line))
+				local = bool(re.search(r"\bpath:", line))
+				add(m.group(1), m.group(2) or "*", "rubygems", "local" if local else "dev" if dev else "runtime")
 	return out
+
+
+def _local(tag: str) -> str:
+	return tag.rsplit("}", 1)[-1]
+
+
+def _parse_pom(path: str, text: str) -> list[Dependency]:
+	root = ET.fromstring(text)
+	props: dict[str, str] = {}
+	for child in root:
+		name = _local(child.tag)
+		if name == "properties":
+			props.update({_local(p.tag): (p.text or "").strip() for p in child})
+		elif name == "version" and child.text:
+			props["project.version"] = child.text.strip()
+	out = []
+	for top in root:
+		if _local(top.tag) != "dependencies":  # dependencyManagement only pins versions; it adds no dependency
+			continue
+		for dep in top:
+			fields = {_local(c.tag): (c.text or "").strip() for c in dep}
+			if not fields.get("groupId") or not fields.get("artifactId"):
+				continue
+			version = re.sub(r"\$\{([^}]+)\}", lambda m: props.get(m.group(1), m.group(0)), fields.get("version", ""))
+			scope = "dev" if fields.get("scope") == "test" else "runtime"
+			out.append(Dependency(f"{fields['groupId']}:{fields['artifactId']}", version or "*", "maven", scope, path))
+	return out
+
+
+def _is_manifest(name: str) -> bool:
+	return name in MANIFESTS or bool(REQUIREMENTS.match(name)) or name.endswith(".csproj")
 
 
 def find_manifests(tree: Tree | None, top_level: set[str]) -> list[str]:
 	paths = tree.files if tree is not None else sorted(top_level)
-	found = [p for p in paths if p.rsplit("/", 1)[-1] in MANIFESTS or REQUIREMENTS.match(p.rsplit("/", 1)[-1])]
+	found = [p for p in paths if _is_manifest(p.rsplit("/", 1)[-1])]
 	return sorted(found, key=lambda p: (p.count("/"), p))[:MAX_MANIFESTS]
 
 
@@ -196,6 +261,55 @@ class FixtureRegistry:
 
 	def get_json(self, url: str):
 		return self.responses.get(url)
+
+
+_EXACT = re.compile(r"^v?\d+(\.\d+)*([-+.][0-9A-Za-z.+-]+)?$")
+
+
+def exact_version(dep: Dependency) -> str | None:
+	"""The declared version if it names one release; None for ranges, wildcards and unresolved properties."""
+	v = dep.spec.strip().strip("[]")
+	return v if _EXACT.match(v) and "," not in v else None
+
+
+def deps_dev_url(dep: Dependency, version: str | None = None) -> str:
+	system = DEPS_DEV[dep.ecosystem]
+	base = f"https://api.deps.dev/v3/systems/{system}/packages/{urllib.parse.quote(dep.name, safe='')}"
+	return f"{base}/versions/{urllib.parse.quote(version, safe='')}" if version else base
+
+
+def resolve_license(dep: Dependency, registry, budget: int) -> tuple[str | None, str | None, bool, str | None, int]:
+	"""(license, source url, found on registry, note, lookups used); budget is how many lookups may be spent."""
+	if dep.ecosystem in DEPS_DEV:
+		version = exact_version(dep)
+		if version:
+			url = deps_dev_url(dep, version)
+			data = registry.get_json(url)
+			lic = ", ".join(data.get("licenses") or []) or None if isinstance(data, dict) else None
+			return lic, url, data is not None, None, 1
+		if budget < 2:
+			return None, None, True, "lookup cap reached", 0
+		pkg_url = deps_dev_url(dep)
+		pkg = registry.get_json(pkg_url)
+		default = next((v["versionKey"]["version"] for v in (pkg or {}).get("versions", []) if v.get("isDefault")), None)
+		if not default:
+			return None, pkg_url, pkg is not None, None, 1
+		url = deps_dev_url(dep, default)
+		data = registry.get_json(url)
+		lic = ", ".join(data.get("licenses") or []) or None if isinstance(data, dict) else None
+		return lic, url, data is not None, f"declared version {dep.spec!r} is not one release; license of the default version {default}", 2
+	if dep.ecosystem == "rubygems":
+		url = f"https://rubygems.org/api/v1/gems/{urllib.parse.quote(dep.name, safe='')}.json"
+		data = registry.get_json(url)
+		lic = ", ".join(data.get("licenses") or []) or None if isinstance(data, dict) else None
+		note = (f"declared version {dep.spec!r} is not one release; license of the latest release {data.get('version')}"
+			if isinstance(data, dict) and not exact_version(dep) else None)
+		return lic, url, data is not None, note, 1
+	url = registry_url(dep)
+	if url is None:
+		return None, None, True, "no license API for this ecosystem", 0
+	data = registry.get_json(url)
+	return license_from(dep, data), url, data is not None, None, 1
 
 
 def registry_url(dep: Dependency) -> str | None:
@@ -247,7 +361,7 @@ def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], reg
 			deps = parse_manifest(path, text)
 		except NotFound:
 			continue
-		except (ValueError, tomllib.TOMLDecodeError) as err:
+		except (ValueError, tomllib.TOMLDecodeError, ET.ParseError) as err:
 			t.ledger.add(Claim("fact", f"Could not parse {path}: {err}.", [Evidence(resp.url)]))
 			continue
 		t.manifests.append(path)
@@ -255,22 +369,24 @@ def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], reg
 			dep.manifest_url = resp.url
 		t.dependencies.extend(deps)
 
-	seen: dict[tuple[str, str], tuple[str | None, str | None, bool]] = {}
+	seen: dict[tuple, tuple] = {}
 	lookups = 0
-	skipped: set[tuple[str, str]] = set()
+	skipped: set[tuple] = set()
 	for dep in t.dependencies:
-		if dep.scope not in ("runtime", "optional") and not include_dev:
+		if dep.scope == "local" or (dep.scope not in ("runtime", "optional") and not include_dev):
 			continue
-		key = (dep.ecosystem, dep.name.lower())
+		key = (dep.ecosystem, dep.name.lower(), dep.spec if dep.ecosystem in DEPS_DEV else "")
 		if key not in seen:
-			url = registry_url(dep)
-			if url is None or lookups >= max_lookups:
+			if lookups >= max_lookups:
 				skipped.add(key)
 				continue
-			lookups += 1
-			data = registry.get_json(url)
-			seen[key] = (license_from(dep, data), url, data is not None)
-		dep.license, dep.license_source, dep.on_registry = seen[key]
+			lic, url, found, note, used = resolve_license(dep, registry, max_lookups - lookups)
+			lookups += used
+			if url is None:
+				skipped.add(key)
+				continue
+			seen[key] = (lic, url, found, note)
+		dep.license, dep.license_source, dep.on_registry, dep.license_note = seen[key]
 		dep.license_class = classify(dep.license)
 		dep.looked_up = True
 
@@ -281,7 +397,7 @@ def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], reg
 
 def _claims(t: DepsTeardown) -> None:
 	if not t.manifests:
-		t.ledger.add(Claim("fact", "No dependency manifests found (package.json, pyproject.toml, requirements*.txt, Cargo.toml, go.mod).",
+		t.ledger.add(Claim("fact", "No dependency manifests found (package.json, pyproject.toml, requirements*.txt, Cargo.toml, go.mod, pom.xml, *.csproj, Gemfile).",
 			[Evidence(f"https://api.github.com/repos/{t.repo}")]))
 		return
 	by_scope: dict[str, int] = {}
@@ -321,7 +437,7 @@ def _claims(t: DepsTeardown) -> None:
 		t.ledger.add(Claim("strength", f"All {len(checked)} checked dependencies have recognised permissive or weak-copyleft licenses.",
 			ev(checked), signal="deps_licenses_clear"))
 	if t.not_checked:
-		t.ledger.add(Claim("fact", f"{t.not_checked} dependencies were not looked up (lookup cap, or no license API for the ecosystem).",
+		t.ledger.add(Claim("fact", f"{t.not_checked} dependencies were not looked up because the lookup cap was reached (raise it with --max-lookups).",
 			[Evidence(u) for u in manifest_urls[:1]]))
 
 
