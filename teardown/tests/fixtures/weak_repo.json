@@ -1,0 +1,11 @@
+{
+  "/repos/acme/weak": {"data": {"full_name": "acme/weak", "html_url": "https://github.com/acme/weak",
+    "stargazers_count": 5000, "forks_count": 10, "open_issues_count": 300, "default_branch": "main",
+    "pushed_at": "2024-01-01T00:00:00Z", "license": null, "archived": true, "description": "demo"}},
+  "/repos/acme/weak/languages": {"data": {"JavaScript": 9000, "CSS": 50}},
+  "/repos/acme/weak/contents": {"data": [
+    {"name": "README.md", "size": 300}, {"name": "index.js", "size": 9000}]},
+  "/repos/acme/weak/releases?per_page=1": {"data": []},
+  "/repos/acme/weak/contributors?per_page=100&anon=1": {"data": [
+    {"login": "solo", "contributions": 95}, {"login": "other", "contributions": 5}]}
+}

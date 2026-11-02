@@ -1,0 +1,21 @@
+{
+  "_note": "Template. Replace every claim with one you have sourced. A claim with no https source is listed as unverified and never reaches the matrix or the plan. The example.com URLs below are placeholders and must be replaced.",
+  "entity": "Example Vertical-Agent Co.",
+  "as_of": "2026-11-02",
+  "claims": [
+    {"kind": "strength", "text": "Each agent handles one narrow task.",
+     "sources": [{"url": "https://example.com/replace-with-primary-source", "quote": "exact words from the source"}],
+     "countermeasure": "Ship one narrow agent per workflow step, each with its own eval set."},
+    {"kind": "strength", "text": "A human approves the step where the agent is least sure.",
+     "sources": [{"url": "https://example.com/replace-with-primary-source", "quote": "exact words from the source"}]},
+    {"kind": "revenue_model", "text": "Charges per resolved task, not per seat.",
+     "sources": [{"url": "https://example.com/replace-with-primary-source", "quote": "exact words from the source"}]},
+    {"kind": "weakness", "text": "Customers report long onboarding.",
+     "sources": [{"url": "https://example.com/replace-with-primary-source", "quote": "exact words from the source"}],
+     "countermeasure": "Self-serve setup; target first useful result within 15 minutes, measured in product analytics."},
+    {"kind": "weakness", "text": "An unsourced rumour, kept to show it is excluded.", "sources": []}
+  ],
+  "figures": [
+    {"kind": "arr", "low": 150, "high": 150, "as_of": "2026", "sources": []}
+  ]
+}
