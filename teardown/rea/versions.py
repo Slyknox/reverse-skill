@@ -6,48 +6,154 @@ commas ("[1,2),[3,4)") meaning any of them. They differ in which version a
 range resolves to: Maven takes the highest release in the range, NuGet the
 lowest. Ordering follows each tool closely enough for real version strings:
 
-- Maven: numeric segments compare as numbers, trailing zeros do not count
-  ("1.0" equals "1"), and qualifiers order as
-  alpha < beta < milestone < rc < snapshot < (release) < sp, with unknown
-  qualifiers after sp in text order.
+- Maven: a port of Maven 3.9.9's ComparableVersion, checked against that class
+  itself (tests/fixtures/maven_order.json). Qualifiers order as
+  alpha < beta < milestone < rc < snapshot < (release) < sp, then unknown
+  qualifiers in text order; "1.0" equals "1"; "1a1" equals "1-alpha-1".
 - NuGet: SemVer-style; a pre-release ("1.0.0-beta") sorts before its release
   and is left out of a range unless a bound itself is a pre-release.
 """
 
 from __future__ import annotations
 
+import functools
 import re
 from dataclasses import dataclass
 
-_QUALIFIERS = {"alpha": 0, "a": 0, "beta": 1, "b": 1, "milestone": 2, "m": 2, "rc": 3, "cr": 3,
-	"snapshot": 4, "": 5, "ga": 5, "final": 5, "release": 5, "sp": 6}
+# ---------- Maven: a port of org.apache.maven.artifact.versioning.ComparableVersion (Maven 3.9.9) ----------
+# A version parses into nested lists of items: integers, qualifier strings, and sub-lists that
+# start at "-" or at a change between digits and letters. Each list drops its trailing "null"
+# items (0, a release-equivalent qualifier, an empty list). Comparison then follows the item rules
+# below. Checked against Maven 3.9.9's own class: see tests/fixtures/maven_order.json.
+
+_MVN_QUALIFIERS = ["alpha", "beta", "milestone", "rc", "snapshot", "", "sp"]
+_MVN_ALIASES = {"ga": "", "final": "", "release": "", "cr": "rc"}
+_RELEASE_INDEX = str(_MVN_QUALIFIERS.index(""))
 
 
-def maven_key(version: str) -> tuple:
-	"""Sort key in Maven's order (a simplification of ComparableVersion that agrees on common versions)."""
-	tokens = re.findall(r"\d+|[a-zA-Z]+", version.lower())
-	items: list[tuple] = []
-	for tok in tokens:
-		if tok.isdigit():
-			items.append((1, int(tok), ""))
+def _qualifier_key(q: str) -> str:
+	return str(_MVN_QUALIFIERS.index(q)) if q in _MVN_QUALIFIERS else f"{len(_MVN_QUALIFIERS)}-{q}"
+
+
+def _cmp(a, b) -> int:
+	return (a > b) - (a < b)
+
+
+class _Str:
+	__slots__ = ("value",)
+
+	def __init__(self, value: str, followed_by_digit: bool):
+		if followed_by_digit and len(value) == 1:
+			value = {"a": "alpha", "b": "beta", "m": "milestone"}.get(value, value)  # a1 = alpha-1 ...
+		self.value = _MVN_ALIASES.get(value, value)
+
+	def is_null(self) -> bool:
+		return _qualifier_key(self.value) == _RELEASE_INDEX
+
+
+def _is_null(item) -> bool:
+	if isinstance(item, int):
+		return item == 0
+	if isinstance(item, list):
+		return len(item) == 0
+	return item.is_null()
+
+
+def _compare(item, other) -> int:
+	"""Java's Item.compareTo; other may be None (a missing item)."""
+	if isinstance(item, int):
+		if other is None:
+			return 0 if item == 0 else 1
+		if isinstance(other, int):
+			return _cmp(item, other)
+		return 1  # 1.1 > 1-sp and 1.1 > 1-1
+	if isinstance(item, _Str):
+		if other is None:
+			return _cmp(_qualifier_key(item.value), _RELEASE_INDEX)  # 1-rc < 1, 1-ga = 1
+		if isinstance(other, _Str):
+			return _cmp(_qualifier_key(item.value), _qualifier_key(other.value))
+		return -1  # 1.any < 1.1 and 1.any < 1-1
+	# a list
+	if other is None:
+		for sub in item:  # MNG-6964: the whole list against nothing, not just its first item
+			result = _compare(sub, None)
+			if result:
+				return result
+		return 0
+	if isinstance(other, int):
+		return -1  # 1-1 < 1.0.x
+	if isinstance(other, _Str):
+		return 1  # 1-1 > 1-sp
+	for n in range(max(len(item), len(other))):
+		left = item[n] if n < len(item) else None
+		right = other[n] if n < len(other) else None
+		result = (0 if right is None else -_compare(right, None)) if left is None else _compare(left, right)
+		if result:
+			return result
+	return 0
+
+
+def _parse_item(is_digit: bool, buf: str):
+	return int(buf.lstrip("0") or "0") if is_digit else _Str(buf, False)
+
+
+def _normalize(items: list) -> None:
+	for n in range(len(items) - 1, -1, -1):
+		if _is_null(items[n]):
+			del items[n]  # trailing 0, "" (release) and empty lists do not count
+		elif not isinstance(items[n], list):
+			break
+
+
+def maven_parse(version: str) -> list:
+	version = version.lower()
+	root: list = []
+	current = root
+	stack = [root]
+	is_digit = False
+	start = 0
+
+	def open_sublist():
+		nonlocal current
+		new: list = []
+		current.append(new)
+		current = new
+		stack.append(new)
+
+	for n, c in enumerate(version):
+		if c in ".-":
+			current.append(0 if n == start else _parse_item(is_digit, version[start:n]))
+			start = n + 1
+			if c == "-":
+				open_sublist()
+		elif c.isdecimal():
+			if not is_digit and n > start:
+				if current:  # 1.0.0.X1 < 1.0.0-X2: treat .X as -X for any string qualifier X
+					open_sublist()
+				current.append(_Str(version[start:n], True))
+				start = n
+				open_sublist()
+			is_digit = True
 		else:
-			rank = _QUALIFIERS.get(tok)
-			items.append((0, rank, "") if rank is not None else (0, 7, tok))
-	# Zeros at the end of a numeric run, and release-equivalent qualifiers, do not change a version:
-	# 1.0 == 1 == 1.0-final, and 1.0-beta == 1-beta. A zero followed by another number stays (1.0.1).
-	cleaned: list[tuple] = []
-	for i, item in enumerate(items):
-		if item == (0, 5, ""):
-			continue
-		if item == (1, 0, ""):
-			following = next((x for x in items[i + 1:] if x not in ((1, 0, ""), (0, 5, ""))), None)
-			if following is None or following[0] == 0:  # only zeros, then a qualifier or the end
-				continue
-		cleaned.append(item)
-	items = cleaned
-	# A version that ends here is a release: it sorts after its own pre-releases (qualifier < 5)
-	# and before its service packs; padding with a release marker gets that order.
-	return tuple(items) + ((0, 5, ""),)
+			if is_digit and n > start:
+				current.append(_parse_item(True, version[start:n]))
+				start = n
+				open_sublist()
+			is_digit = False
+	if len(version) > start:
+		if not is_digit and current:
+			open_sublist()
+		current.append(_parse_item(is_digit, version[start:]))
+	while stack:
+		_normalize(stack.pop())
+	return root
+
+
+def maven_compare(a: str, b: str) -> int:
+	return _compare(maven_parse(a), maven_parse(b))
+
+
+maven_key = functools.cmp_to_key(maven_compare)  # sort key in Maven 3.9.9's order
 
 
 def nuget_key(version: str) -> tuple:

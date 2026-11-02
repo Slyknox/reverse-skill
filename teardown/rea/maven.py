@@ -31,6 +31,8 @@ import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 
+from .activation import BuildContext, evaluate
+
 CENTRAL = "https://repo1.maven.org/maven2"
 MAX_DEPTH = 8
 OTHER_BOM_BUDGET = 5  # BOMs read per POM that share no groupId with what is still unmanaged
@@ -95,14 +97,30 @@ def _read_section(el, pom: "Pom", override: bool) -> None:
 				pom.dependencies.append(entry)
 
 
-def parse_pom(text: str) -> Pom:
-	"""Parse a POM, applying profiles marked activeByDefault.
+def _activation(el) -> tuple[bool, dict | None]:
+	"""(activeByDefault, conditions) from an <activation> element."""
+	if el is None:
+		return False, None
+	fields = {_local(c.tag): c for c in el}
+	cond: dict = {}
+	if "jdk" in fields:
+		cond["jdk"] = (fields["jdk"].text or "").strip()
+	if "os" in fields:
+		cond["os"] = {_local(c.tag): (c.text or "").strip() for c in fields["os"]}
+	if "property" in fields:
+		cond["property"] = (_txt(fields["property"], "name"), _txt(fields["property"], "value"))
+	if "file" in fields:
+		cond["file"] = (_txt(fields["file"], "exists"), _txt(fields["file"], "missing"))
+	return (_txt(el, "activeByDefault") or "").lower() == "true", cond or None
 
-	Other profiles activate on the build machine (JDK, OS, a -D property, a file, -P),
-	which a teardown cannot know, so they are listed in skipped_profiles, not applied.
-	An activeByDefault profile is switched off when another profile activates; that is
-	also unknowable here, so it is applied and named in applied_profiles.
+
+def parse_pom(text: str, ctx: BuildContext | None = None, pom_dir: str | None = None, file_exists=None) -> Pom:
+	"""Parse a POM and apply the profiles that are on for the given build context (see rea.activation).
+
+	pom_dir and file_exists let <file> conditions be checked against the repository; a POM
+	from Maven Central has neither, so its file conditions stay unknown.
 	"""
+	ctx = ctx or BuildContext()
 	root = ET.fromstring(text)
 	fields = {_local(c.tag): c for c in root}
 	parent = None
@@ -113,15 +131,31 @@ def parse_pom(text: str) -> Pom:
 	pom = Pom(_txt(root, "groupId") or (parent[0] if parent else None), _txt(root, "artifactId"),
 		_txt(root, "version") or (parent[2] if parent else None), parent)
 	_read_section(root, pom, override=False)
+	evaluated, defaults = [], []
 	for profile in fields.get("profiles", []):
 		name = _txt(profile, "id") or "(no id)"
-		activation = next((c for c in profile if _local(c.tag) == "activation"), None)
-		if activation is not None and (_txt(activation, "activeByDefault") or "").lower() == "true":
-			_read_section(profile, pom, override=True)
-			pom.applied_profiles.append(name)
+		by_default, cond = _activation(next((c for c in profile if _local(c.tag) == "activation"), None))
+		state, why = evaluate(name, cond, ctx, pom_dir, file_exists)
+		# activeByDefault is a fallback: a default profile whose own conditions do not switch it on
+		# (and that -P did not turn off) is applied only if no other profile in this POM is on.
+		if by_default and state is not True and name not in ctx.profiles_off:
+			defaults.append((profile, name))
 		else:
-			how = ", ".join(_local(c.tag) for c in activation) if activation is not None else "-P only"
-			pom.skipped_profiles.append(f"{name} ({how})")
+			evaluated.append((profile, name, state, why))
+	any_on = any(state is True for _, _, state, _ in evaluated)
+	any_unknown = any(state is None for _, _, state, _ in evaluated)
+	for profile, name, state, why in evaluated:
+		if state is True:
+			_read_section(profile, pom, override=True)
+			pom.applied_profiles.append(f"{name} ({why})")
+		else:
+			pom.skipped_profiles.append(f"{name} ({'unknown: ' if state is None else ''}{why})")
+	for profile, name in defaults:
+		if any_on:
+			pom.skipped_profiles.append(f"{name} (activeByDefault, off because another profile is on)")
+		else:
+			_read_section(profile, pom, override=True)
+			pom.applied_profiles.append(f"{name} (activeByDefault" + (", but another profile's state is unknown and could turn it off)" if any_unknown else ")"))
 	return pom
 
 
@@ -157,7 +191,9 @@ def _affinity(import_group: str, wanted: set[str]) -> int:
 class Resolver:
 	"""load_repo(path) -> text or None reads a repository file; fetch(url) -> text or None reads Maven Central."""
 
-	def __init__(self, load_repo, fetch, max_fetches: int = 25):
+	def __init__(self, load_repo, fetch, max_fetches: int = 25, ctx: BuildContext | None = None, file_exists=None):
+		self.ctx = ctx or BuildContext()
+		self.file_exists = file_exists  # path -> bool | None, for <file> profile conditions in repository POMs
 		self.load_repo = load_repo
 		self.fetch = fetch
 		self.max_fetches = max_fetches
@@ -196,7 +232,7 @@ class Resolver:
 		else:
 			self.fetched_urls.append(url)
 			try:
-				pom = parse_pom(text)
+				pom = parse_pom(text, self.ctx)  # from Maven Central: file conditions stay unknown
 			except ET.ParseError as err:
 				self._problem(f"{g}:{a}:{v} is not valid XML ({err})")
 		self._central_cache[url] = pom
@@ -218,7 +254,7 @@ class Resolver:
 				text = self.load_repo(candidate)
 				if text is not None:
 					try:
-						found = parse_pom(text)
+						found = parse_pom(text, self.ctx, posixpath.dirname(candidate), self.file_exists)
 					except ET.ParseError:
 						found = None
 					if found is not None and found.artifact == a:
