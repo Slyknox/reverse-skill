@@ -40,7 +40,8 @@ npm, PyPI, crates.io and RubyGems directly, and Go, Maven and NuGet through
 deps.dev. Every answer links to the response it came from. deps.dev answers
 per version. A declared version that names one release is looked up as is. A
 Maven or NuGet range such as `[3.1,4.0)` resolves to the version the tool
-itself would pick from the published list: the highest for Maven, the lowest
+itself would pick from the published list (Maven's order is a port of Maven
+3.9.9's ComparableVersion, checked pair by pair against that class): the highest for Maven, the lowest
 for NuGet. NuGet leaves out pre-releases unless a bound is one, and Maven, as
 Maven does, can pick a pre-release of the upper bound. An unresolved property
 uses the package's default version. The dependency table says which happened. When several licenses are listed, all of them
@@ -49,11 +50,17 @@ packages not on the registry. For Maven, a dependency without a version gets
 one the way Maven would: from the parent POM (read from the repository when
 `relativePath` points at it, else from Maven Central), from BOMs imported in
 `dependencyManagement`, with `${properties}` taken from the whole chain and
-the child's values winning. Profiles marked `activeByDefault` are applied, and
-the report says so, because Maven switches them off when another profile
-activates. Profiles that activate on the build machine (JDK, OS, a property, a
-file, `-P`) are listed as not applied. The table names the POM each version
-came from.
+the child's values winning. The table names the POM each version came from.
+
+Maven profiles are applied the way Maven would for a build you describe:
+`-P id` / `-P !id`, `-D name=value`, `--jdk 21`, `--os-family unix`,
+`--os-name`, `--os-arch`. JDK prefixes and ranges, OS, property and file
+conditions are evaluated. File conditions are checked against the repository's
+file listing, and all conditions in one profile must hold. A condition your
+flags do not decide is "unknown". Such a profile is not applied, and the report
+says which flag would decide it. An `activeByDefault` profile applies only when
+no other profile in that POM is on, and the report warns when an unknown one
+could turn it off.
 BOMs whose groupId matches an unmanaged dependency are read first, and
 `--max-pom-fetches` (default 25) caps Maven Central reads. Anything left over
 is reported as unresolved, not guessed. The project's own local and workspace packages

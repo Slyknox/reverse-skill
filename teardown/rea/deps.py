@@ -12,6 +12,7 @@ listed as not checked.
 from __future__ import annotations
 
 import base64
+import posixpath
 import json
 import re
 import tomllib
@@ -212,14 +213,13 @@ def _local(tag: str) -> str:
 
 def _parse_pom(path: str, text: str, resolver=None) -> list[Dependency]:
 	"""Without a resolver, only the file's own properties and management are used (offline, no parent)."""
-	pom = parse_pom(text)
 	if resolver is None:
 		resolver = Resolver(lambda _p: None, lambda _u: None, max_fetches=0)
+	pom = parse_pom(text, resolver.ctx, posixpath.dirname(path), resolver.file_exists)
 	res = resolver.resolve(pom, path, path, wanted_artifacts(pom))
-	if pom.applied_profiles:
-		resolver.notes.append(f"{path}: applied activeByDefault profile(s) {', '.join(pom.applied_profiles)} (Maven turns these off when another profile activates)")
-	if pom.skipped_profiles:
-		resolver.notes.append(f"{path}: profile(s) not applied because their activation depends on the build machine: {', '.join(pom.skipped_profiles)}")
+	if pom.applied_profiles or pom.skipped_profiles:
+		resolver.notes.append(f"{path} with {resolver.ctx.describe()}: applied {', '.join(pom.applied_profiles) or 'none'}; "
+			f"not applied {', '.join(pom.skipped_profiles) or 'none'}")
 	out = []
 	for ga, version, scope, origin in resolve_dependencies(pom, res):
 		dep = Dependency(ga, version, "maven", scope, path)
@@ -389,7 +389,7 @@ def license_from(dep: Dependency, data) -> str | None:
 # ---------- teardown ----------
 
 def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], registry,
-		max_lookups: int = 40, include_dev: bool = False, max_pom_fetches: int = 25) -> DepsTeardown:
+		max_lookups: int = 40, include_dev: bool = False, max_pom_fetches: int = 25, build=None) -> DepsTeardown:
 	base = f"/repos/{repo}"
 	t = DepsTeardown(repo=repo)
 	files = set(tree.files) if tree is not None else set(top_level)
@@ -403,7 +403,19 @@ def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], reg
 			return None
 		return base64.b64decode(r.data.get("content", "")).decode("utf-8", "replace")
 
-	resolver = Resolver(load_repo, registry.get_text, max_fetches=max_pom_fetches)
+	dirs = {posixpath.dirname(f) for f in files}
+	expanded = set()
+	for d in dirs:
+		while d and d not in expanded:
+			expanded.add(d)
+			d = posixpath.dirname(d)
+
+	def file_exists(path: str) -> bool | None:
+		if tree is None:
+			return None  # only the top level is known: absence proves nothing
+		return path in files or path in expanded
+
+	resolver = Resolver(load_repo, registry.get_text, max_fetches=max_pom_fetches, ctx=build, file_exists=file_exists)
 	for path in find_manifests(tree, top_level):
 		try:
 			resp = client.get(f"{base}/contents/{urllib.parse.quote(path)}")
@@ -504,7 +516,7 @@ def _claims(t: DepsTeardown) -> None:
 			[Evidence(u) for u in manifest_urls[:1]]))
 
 
-def deps_for_repo(client, repo: str, registry, max_lookups: int = 40, include_dev: bool = False, max_pom_fetches: int = 25) -> DepsTeardown:
+def deps_for_repo(client, repo: str, registry, max_lookups: int = 40, include_dev: bool = False, max_pom_fetches: int = 25, build=None) -> DepsTeardown:
 	"""Standalone entry point: reads the default branch and file listing, then the manifests."""
 	from .tree import load_tree
 
@@ -516,4 +528,4 @@ def deps_for_repo(client, repo: str, registry, max_lookups: int = 40, include_de
 	top = set()
 	if tree is None:
 		top = {e["name"] for e in client.get(f"{base}/contents").data if isinstance(e, dict)}
-	return teardown_deps(client, meta.get("full_name", repo), tree, top, registry, max_lookups, include_dev, max_pom_fetches)
+	return teardown_deps(client, meta.get("full_name", repo), tree, top, registry, max_lookups, include_dev, max_pom_fetches, build)

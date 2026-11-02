@@ -66,9 +66,9 @@ PROFILES = """<project><artifactId>app</artifactId><properties><x.version>1</x.v
 
 class ProfileTests(unittest.TestCase):
 	def test_active_by_default_profile_is_applied_and_others_are_listed(self):
-		pom = parse_pom(PROFILES)
-		self.assertEqual(pom.applied_profiles, ["default"])
-		self.assertEqual(pom.skipped_profiles, ["jdk21 (jdk)", "release (-P only)"])
+		pom = parse_pom(PROFILES)  # no build context: the JDK profile is unknown, so the default carries a caveat
+		self.assertEqual(pom.applied_profiles, ["default (activeByDefault, but another profile's state is unknown and could turn it off)"])
+		self.assertEqual(pom.skipped_profiles, ["jdk21 (unknown: needs --jdk)", "release (activates only with -P)"])
 		deps = {d.name: d.spec for d in parse_manifest("pom.xml", PROFILES)}
 		self.assertEqual(deps, {"g:base": "2", "g:extra": "3", "g:managed": "7"})  # profile property wins; jdk21 not applied
 

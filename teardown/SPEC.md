@@ -1,6 +1,6 @@
 # Reverse Engineer Anything (rea): spec
 
-Status: 0.5.0, 2026-11-02 (four roadmap rounds built). Self-contained tool. It is not part of the
+Status: 0.6.0, 2026-11-02 (five roadmap rounds built). Self-contained tool. It is not part of the
 reverse-skill security router and is not wired into `skills/config/routing.json`.
 
 ## Problem
@@ -44,6 +44,8 @@ that prompted this tool showed the four usual faults:
 | A Maven or NuGet range resolves to the release the tool would pick (Maven highest, NuGet lowest), and says so; an empty range says so | `versions.pick`, `deps.resolve_license` | `test_maven_takes_highest_nuget_takes_lowest`, `test_nuget_range_resolves_to_its_lowest_version_and_empty_range_says_so` |
 | activeByDefault Maven profiles are applied and named; profiles that depend on the build machine are listed, not applied | `maven.parse_pom` | `test_active_by_default_profile_is_applied_and_others_are_listed` |
 | A model judge only proposes pairs by id among unmatched sourced claims; ids, reuse and kind pairings are checked in code; nothing is sent past the size limit | `judge.judge_matches` | `test_model_adds_pairs_the_vocabulary_misses_and_only_sees_unmatched_claims`, `test_invented_ids_reuse_and_disallowed_kind_pairs_are_dropped`, `test_nothing_sent_when_too_many_claims_or_nothing_left` |
+| Maven version order matches Maven 3.9.9's ComparableVersion on every recorded pair | `versions.maven_compare` | `test_every_recorded_pair_matches_maven`, `test_maven_test_suite_orders` |
+| Profiles are evaluated against the build context given; an undecided condition is unknown, never assumed; activeByDefault is a fallback | `activation.evaluate`, `maven.parse_pom` | `test_conditions_with_a_full_context`, `test_default_profile_applies_only_when_nothing_else_is_on`, `test_unknown_conditions_are_reported_not_guessed` |
 
 ## What "better" means here
 
@@ -100,8 +102,13 @@ Built in 0.5.0:
 13. Maven profiles marked activeByDefault applied; other profiles listed.
 14. `diff --judge`: a model proposes matches beyond the vocabulary, checked in code and kept as suggestions.
 
+Built in 0.6.0:
+
+15. Maven profile activation evaluated against a build context you give (-P, -D, --jdk, --os-*), with file conditions checked against the repository.
+16. Maven version order ported from Maven 3.9.9's ComparableVersion and checked against that class on 4,000 recorded pairs (all 323,610 pairs of an 805-version corpus matched during the build); the recorder is `tests/tools/maven_order/regenerate.py`. Maven's order is not transitive in some edge cases; the port reproduces that, pair by pair.
+
 Not yet built:
 
 - `draft` and `diff --judge` have not been run against the live API (no Anthropic credential in the build session); both are tested with a fake model client, and SDK 2.3.0 accepted the request shape.
-- Maven profiles that activate on JDK, OS, properties or files are listed, not evaluated.
-- Version ordering is a close simplification of Maven's ComparableVersion and NuGet's rules, not a full port.
+- Environment-variable (`env.X`) profile conditions and Maven 4's `packaging` condition are reported as unknown.
+- NuGet order follows SemVer 2.0 precedence (checked against the semver.org example) rather than a port of NuGet's own code.

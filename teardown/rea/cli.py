@@ -17,6 +17,7 @@ import sys
 from dataclasses import asdict
 
 from . import render
+from .activation import BuildContext
 from .company import load_dossier_file
 from .diff import diff, diff_md
 from .draft import DEFAULT_MODEL, DraftError, draft_dossier, sdk_complete
@@ -57,6 +58,12 @@ def main(argv: list[str] | None = None) -> int:
 		sp.add_argument("--max-lookups", type=int, default=40, help="registry lookups at most (default 40)")
 		sp.add_argument("--include-dev", action="store_true", help="also look up dev dependencies")
 		sp.add_argument("--max-pom-fetches", type=int, default=25, help="Maven parent/BOM POMs read from Maven Central at most (default 25)")
+		sp.add_argument("-P", "--maven-profile", action="append", default=[], help="Maven profiles on (id) or off (!id), as with mvn -P")
+		sp.add_argument("-D", "--maven-property", action="append", default=[], help="name=value set for the build, as with mvn -D")
+		sp.add_argument("--jdk", help="JDK version of the build, e.g. 21 or 1.8.0_392")
+		sp.add_argument("--os-family", help="e.g. unix, windows, mac")
+		sp.add_argument("--os-name", help="e.g. linux")
+		sp.add_argument("--os-arch", help="e.g. amd64, aarch64")
 	c = sub.add_parser("company", help="tear down a company or product from a sourced dossier")
 	c.add_argument("dossier")
 	c.add_argument("--verify", action="store_true", help="fetch each source and keep a claim only if its quote is on the page")
@@ -85,17 +92,19 @@ def main(argv: list[str] | None = None) -> int:
 
 	try:
 		if args.cmd in ("repo", "deps"):
+			build = BuildContext.from_args(args.maven_profile, args.maven_property, jdk=args.jdk,
+				os_family=args.os_family, os_name=args.os_name, os_arch=args.os_arch)
 			client = FixtureClient(_load(args.fixture)) if args.fixture else Client()
 			registry = FixtureRegistry(_load(args.registry_fixture)) if args.registry_fixture else Registry()
 		if args.cmd == "repo":
 			t = teardown_repo(client, args.repo)
 			if args.deps:
-				d = teardown_deps(client, t.repo, t.tree, t.top_level, registry, args.max_lookups, args.include_dev, args.max_pom_fetches)
+				d = teardown_deps(client, t.repo, t.tree, t.top_level, registry, args.max_lookups, args.include_dev, args.max_pom_fetches, build)
 				for claim in d.ledger.sourced + d.ledger.unverified:
 					t.ledger.add(claim)
 			_write(render.repo_md(t) if args.format == "md" else render.to_json(t), args.out)
 		elif args.cmd == "deps":
-			d = deps_for_repo(client, args.repo, registry, args.max_lookups, args.include_dev, args.max_pom_fetches)
+			d = deps_for_repo(client, args.repo, registry, args.max_lookups, args.include_dev, args.max_pom_fetches, build)
 			_write(render.deps_md(d) if args.format == "md" else render.to_json(d), args.out)
 		elif args.cmd in ("company", "verify"):
 			fetcher = None
