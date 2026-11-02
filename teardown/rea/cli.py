@@ -77,6 +77,7 @@ def main(argv: list[str] | None = None) -> int:
 		sp.add_argument("--os-arch", help="e.g. amd64, aarch64")
 		sp.add_argument("--env", action="append", default=[], help="NAME=value environment variable for env.NAME profile conditions")
 		sp.add_argument("--no-osv", action="store_true", help="skip the OSV.dev known-vulnerability check")
+		sp.add_argument("--no-transitive", action="store_true", help="only the dependencies the manifests declare, not the whole lockfile tree")
 	c = sub.add_parser("company", help="tear down a company or product from a sourced dossier")
 	c.add_argument("dossier")
 	c.add_argument("--verify", action="store_true", help="fetch each source and keep a claim only if its quote is on the page")
@@ -115,12 +116,12 @@ def main(argv: list[str] | None = None) -> int:
 		if args.cmd == "repo":
 			t = teardown_repo(client, args.repo)
 			if args.deps:
-				d = teardown_deps(client, t.repo, t.tree, t.top_level, registry, args.max_lookups, args.include_dev, args.max_pom_fetches, build, not args.no_osv)
+				d = teardown_deps(client, t.repo, t.tree, t.top_level, registry, args.max_lookups, args.include_dev, args.max_pom_fetches, build, not args.no_osv, not args.no_transitive)
 				for claim in d.ledger.sourced + d.ledger.unverified:
 					t.ledger.add(claim)
 			_emit(t, args.format, render.repo_md(t), args.out)
 		elif args.cmd == "deps":
-			d = deps_for_repo(client, args.repo, registry, args.max_lookups, args.include_dev, args.max_pom_fetches, build, not args.no_osv)
+			d = deps_for_repo(client, args.repo, registry, args.max_lookups, args.include_dev, args.max_pom_fetches, build, not args.no_osv, not args.no_transitive)
 			_emit(d, args.format, render.deps_md(d), args.out)
 		elif args.cmd in ("company", "verify"):
 			fetcher = None

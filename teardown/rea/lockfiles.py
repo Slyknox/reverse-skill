@@ -5,7 +5,10 @@ A manifest says what is allowed ("^3.0"); the lockfile says what was installed
 root), the locked version is what a license or vulnerability lookup should be
 about, and the report says it came from the lockfile.
 
-Each reader returns {name.lower(): version} for its ecosystem. Readers accept
+Each reader returns {name: version} or {name: (version, dev)} for its ecosystem;
+parse_lockfile_full keeps the dev flag (True only where the format marks a
+package dev-only: package-lock "dev", composer "packages-dev", Pipfile
+"develop", pubspec "direct dev"), and parse_lockfile drops it. Readers accept
 the common shapes of each format and skip entries they cannot read; they never
 guess a version. go.sum is not read: go.mod already pins exact versions, and
 go.sum lists every version ever downloaded, not the one in use.
@@ -25,15 +28,24 @@ LOCKFILE_ECOSYSTEM = {
 }
 
 
-def parse_lockfile(name: str, text: str) -> dict[str, str]:
+def parse_lockfile_full(name: str, text: str) -> dict[str, tuple[str, bool]]:
+	"""{name.lower(): (version, dev)}; dev is True only where the lockfile itself marks the package as dev-only."""
 	try:
 		reader = _READERS[name]
 	except KeyError:
 		return {}
 	try:
-		return {k.lower(): v for k, v in reader(text).items() if k and v}
+		out = {}
+		for k, v in reader(text).items():
+			if k and v:
+				out[k.lower()] = v if isinstance(v, tuple) else (v, False)
+		return out
 	except (ValueError, KeyError, TypeError, AttributeError, tomllib.TOMLDecodeError):
 		return {}  # an unreadable lockfile pins nothing; the caller reports it as not read
+
+
+def parse_lockfile(name: str, text: str) -> dict[str, str]:
+	return {k: v for k, (v, _dev) in parse_lockfile_full(name, text).items()}
 
 
 def _package_lock(text: str) -> dict[str, str]:
@@ -42,10 +54,10 @@ def _package_lock(text: str) -> dict[str, str]:
 	for path, entry in (data.get("packages") or {}).items():  # lockfile v2/v3
 		if path.startswith("node_modules/") and isinstance(entry, dict) and entry.get("version"):
 			name = path.rsplit("node_modules/", 1)[-1]
-			out.setdefault(name, entry["version"])  # the top-level copy comes first
+			out.setdefault(name, (entry["version"], bool(entry.get("dev"))))  # the top-level copy comes first
 	for name, entry in (data.get("dependencies") or {}).items():  # v1
 		if isinstance(entry, dict) and entry.get("version"):
-			out.setdefault(name, entry["version"])
+			out.setdefault(name, (entry["version"], bool(entry.get("dev"))))
 	return out
 
 
@@ -110,7 +122,7 @@ def _pipfile_lock(text: str) -> dict[str, str]:
 		for name, entry in (data.get(section) or {}).items():
 			v = entry.get("version", "") if isinstance(entry, dict) else ""
 			if v.startswith("=="):
-				out.setdefault(name, v[2:])
+				out.setdefault(name, (v[2:], section == "develop"))
 	return out
 
 
@@ -136,12 +148,13 @@ def _composer_lock(text: str) -> dict[str, str]:
 	for section in ("packages", "packages-dev"):
 		for p in data.get(section) or []:
 			if p.get("name") and p.get("version"):
-				out.setdefault(p["name"], p["version"].lstrip("v"))
+				out.setdefault(p["name"], (p["version"].lstrip("v"), section == "packages-dev"))
 	return out
 
 
-def _pubspec_lock(text: str) -> dict[str, str]:
-	out: dict[str, str] = {}
+def _pubspec_lock(text: str) -> dict:
+	out: dict = {}
+	dev: dict[str, bool] = {}
 	name = None
 	in_packages = False
 	for line in text.splitlines():
@@ -156,9 +169,12 @@ def _pubspec_lock(text: str) -> dict[str, str]:
 		if m:
 			name = m.group(1)
 			continue
+		m = re.match(r'^    dependency:\s*"?([^"]+)"?\s*$', line)
+		if m and name:
+			dev[name] = m.group(1).strip() == "direct dev"
 		m = re.match(r'^    version:\s*"?([^"\s]+)"?\s*$', line)
 		if m and name:
-			out.setdefault(name, m.group(1))
+			out.setdefault(name, (m.group(1), dev.get(name, False)))
 	return out
 
 

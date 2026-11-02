@@ -1,6 +1,6 @@
 # Reverse Engineer Anything (rea): spec
 
-Status: 0.8.0, 2026-11-02 (seven roadmap rounds built). Self-contained tool. It is not part of the
+Status: 0.9.0, 2026-11-02 (eight roadmap rounds built). Self-contained tool. It is not part of the
 reverse-skill security router and is not wired into `skills/config/routing.json`.
 
 ## Problem
@@ -52,6 +52,8 @@ that prompted this tool showed the four usual faults:
 | Composer, Swift, pub and Hex dependencies are parsed; vcs and local ones are never looked up; a Composer constraint resolves as Composer does | `manifests`, `deps.resolve_license` | `ParserTests`, `ComposerConstraintTests`, `test_vcs_and_local_dependencies_are_never_looked_up` |
 | Only exact or locked versions are queried on OSV; every advisory is linked; OSV failing is "not checked", never "none" | `osv.check`, `osv.claims` | `test_only_exact_or_locked_versions_are_queried_and_findings_cite_osv`, `test_osv_failure_is_reported_as_not_checked` |
 | The HTML report is self-contained and escapes every value | `report.render` | `test_each_kind_renders_self_contained_html` |
+| Every package a lockfile resolved is a dependency (transitive, or transitive-dev where marked); declared ones are looked up first; OSV covers the whole tree and names the lockfile | `deps._pin_from_lockfiles`, `osv.Finding.via` | `test_lockfile_packages_become_transitive_dependencies`, `test_declared_dependencies_are_looked_up_before_transitive_ones`, `test_osv_covers_the_transitive_tree_and_names_the_lockfile` |
+| Files past the contents API's 1 MB limit are read through the blob API by sha | `deps.teardown_deps.read_file` | `test_files_over_the_contents_limit_are_read_through_the_blob_api` |
 
 ## What "better" means here
 
@@ -125,9 +127,12 @@ Built in 0.8.0:
 21. OSV.dev known-vulnerability checks for every exact or locked version, with a plan item.
 22. `rea report` and `--format html`: a self-contained HTML page for any result.
 
-Not yet built:
+Built in 0.9.0:
 
-- `draft` and `diff --judge` have not been run against the live API (no Anthropic credential in the build session); both are tested with a fake model client, and SDK 2.3.0 accepted the request shape.
-- A differential run against the real NuGet.Versioning library (needs a .NET SDK, whose installer the build session's policy refused).
+23. The full lockfile tree: transitive packages (with the lockfile's own dev marking) checked against OSV and, within the cap, for licenses; OSV caps raised to 1,000 per batch and 5,000 per run; blob API fallback for files over 1 MB.
+
+Blocked, not built:
+
+- `draft` and `diff --judge` have not been run against the live API: the build session has no Anthropic credential (`ANTHROPIC_API_KEY` or an `ant auth login` profile). Both are tested with a fake model client, and SDK 2.3.0 accepted the request shape.
+- A differential run against the real NuGet.Versioning library: the build session's policy refused both Microsoft's `dotnet-install.sh` and the direct download of the SHA-512-verified SDK archive. It needs a permission rule for that download, or a machine that has .NET.
 - Swift packages hosted outside GitHub have no license lookup; GitHub lookups report the default branch's license, not the pinned release's.
-- OSV answers for Swift (SwiftURL) packages were not seen live, because this session's GitHub access is limited to attached repositories.

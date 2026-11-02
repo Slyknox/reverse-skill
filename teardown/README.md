@@ -43,7 +43,13 @@ manifests). When a lockfile sits beside a manifest or at the root
 `poetry.lock`, `pdm.lock`, `Pipfile.lock`, `Cargo.lock`, `Gemfile.lock`,
 `composer.lock`, `pubspec.lock`, `mix.lock`, `Package.resolved`,
 `packages.lock.json`), each dependency is pinned to the version it resolved
-to, and every lookup is about that version. It then looks up each runtime
+to, and every lookup is about that version. Every other package the lockfile
+resolved is added too, with scope `transitive` (or `transitive-dev` where the
+lockfile marks it dev-only), because most real vulnerabilities sit there.
+Declared dependencies are looked up first, so transitive licenses use whatever
+`--max-lookups` budget remains. `--no-transitive` keeps only what the manifests
+declare. Files over GitHub's 1 MB contents limit are read through the blob
+API. It then looks up each runtime
 dependency's license: npm, PyPI, crates.io, RubyGems, Packagist, pub.dev and
 hex.pm directly, Go, Maven and NuGet through deps.dev, and Swift packages
 through the GitHub license of their repository (GitHub-hosted only, and the
@@ -58,7 +64,8 @@ OSV.dev for known vulnerabilities. Each advisory is linked, with its summary and
 severity where OSV states them, and becomes a "fix" item in the build plan.
 Dependencies with only a range are reported as not checked (OSV answers per
 version), and OSV not answering is reported, never read as "no
-vulnerabilities". `--no-osv` skips the check. Every answer links to the response it came from. deps.dev answers
+vulnerabilities". Up to 5,000 packages are checked per run, in batches of
+1,000. `--no-osv` skips the check. Every answer links to the response it came from. deps.dev answers
 per version. A declared version that names one release is looked up as is. A
 Maven or NuGet range such as `[3.1,4.0)` resolves to the version the tool
 itself would pick from the published list. Maven's order is a port of Maven

@@ -18,6 +18,7 @@ class Tree:
 	url: str
 	files: list[str] = field(default_factory=list)
 	truncated: bool = False
+	shas: dict[str, str] = field(default_factory=dict)  # path -> blob sha, for files too large for the contents API
 
 	def test_locations(self, limit: int = 5) -> list[str]:
 		"""Distinct folders that hold tests: a test-named folder, or the folder of a test-named file."""
@@ -44,6 +45,6 @@ def load_tree(client, base: str, branch: str) -> Tree | None:
 		resp = client.get(f"{base}/git/trees/{branch}?recursive=1")
 	except NotFound:
 		return None
-	files = [e["path"] for e in resp.data.get("tree", [])
-		if e.get("type") == "blob" and not (set(e["path"].split("/")) & IGNORED_SEGMENTS)]
-	return Tree(url=resp.url, files=files, truncated=bool(resp.data.get("truncated")))
+	blobs = [e for e in resp.data.get("tree", []) if e.get("type") == "blob" and not (set(e["path"].split("/")) & IGNORED_SEGMENTS)]
+	return Tree(url=resp.url, files=[e["path"] for e in blobs], truncated=bool(resp.data.get("truncated")),
+		shas={e["path"]: e["sha"] for e in blobs if e.get("sha")})
