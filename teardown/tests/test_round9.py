@@ -42,7 +42,7 @@ class OsvTests(unittest.TestCase):
 		sent = []
 		reg = self.registry(lambda qs: [{"vulns": [{"id": "GHSA-1"}, {"id": "GHSA-2"}]} if q["package"]["name"] == "lodash" else {} for q in qs],
 			{"GHSA-1": {"summary": "Prototype pollution", "database_specific": {"severity": "HIGH"}, "aliases": ["CVE-2020-8203"]},
-				"GHSA-2": {"summary": "ReDoS", "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"}]}}, sent)
+				"GHSA-2": {"details": "## ReDoS\n\nLong explanation.", "severity": [{"type": "CVSS_V3", "score": "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:H"}]}}, sent)
 		deps = [dep("lodash", "^4.17", "npm", locked="4.17.15"), dep("express", "^4", "npm"), dep("requests", "==2.31.0", "pypi"),
 			dep("mine", "path = ../mine", "crates", scope="local"), dep("x/y", "=1.0.0", "swift")]
 		deps[-1].url = "https://github.com/x/y.git"
@@ -54,6 +54,7 @@ class OsvTests(unittest.TestCase):
 		self.assertEqual([(f.name, [a.id for a in f.advisories]) for f in result.findings], [("lodash", ["GHSA-1", "GHSA-2"])])
 		self.assertEqual(result.findings[0].advisories[0].severity, "High")
 		self.assertEqual(result.findings[0].advisories[1].severity, "High (CVSS 3 base score 7.5)")
+		self.assertEqual(result.findings[0].advisories[1].summary, "ReDoS")  # from details when summary is absent
 		out = claims(result, "https://api.github.com/repos/a/b")
 		weakness = next(c for c in out if c.kind == "weakness")
 		self.assertIn("GHSA-1 (High): Prototype pollution", weakness.text)

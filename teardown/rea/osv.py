@@ -150,7 +150,9 @@ def check(deps, registry, effective_version) -> OsvResult:
 		for detail in (answer or {}).get("vulns") or [] if isinstance(answer, dict) else []:
 			adv = seen.get(detail.get("id"))
 			if adv is not None and adv.summary is None:
-				adv.summary = (detail.get("summary") or "").strip()[:200] or None
+				# OSV's summary is optional; details (Markdown) is the long form. Use its first line when summary is missing.
+				text = (detail.get("summary") or "").strip() or (detail.get("details") or "").strip().split("\n", 1)[0].lstrip("# ").strip()
+				adv.summary = text[:200] or None
 				adv.severity = _severity(detail)
 				adv.aliases = [a for a in detail.get("aliases") or [] if isinstance(a, str)][:5]
 	return result
