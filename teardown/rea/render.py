@@ -110,13 +110,19 @@ def deps_md(d) -> str:
 	out = [f"# Dependencies: {d.repo}", "", "Licenses come from the package registry; each is linked to the registry answer it came from.", "",
 		"## Findings", ""]
 	out += _matrix(d.ledger)
+	if d.osv and d.osv.findings:
+		out += ["## Known vulnerabilities (OSV.dev)", "", "| Dependency | Version | Advisory | Severity | Summary |", "|---|---|---|---|---|"]
+		for f in d.osv.findings:
+			for a in f.advisories:
+				out.append(f"| {f.name} | {f.version} | [{a.id}]({a.link}) | {a.severity or 'not stated'} | {(a.summary or '').replace('|', '/')} |")
+		out.append("")
 	if d.dependencies:
-		out += ["## Dependency list", "", "| Name | Version spec | Ecosystem | Scope | Manifest | License | Class |", "|---|---|---|---|---|---|---|"]
+		out += ["## Dependency list", "", "| Name | Version spec | Locked | Ecosystem | Scope | Manifest | License | Class |", "|---|---|---|---|---|---|---|---|"]
 		for dep in d.dependencies:
 			lic = f"[{dep.license or 'not stated'}]({dep.license_source})" if dep.license_source else "not looked up"
 			if dep.license_note:
 				lic += f" ({dep.license_note})"
 			spec = f"`{dep.spec}`" + (f" ({dep.version_from})" if getattr(dep, "version_from", None) else "")
-			out.append(f"| {dep.name} | {spec} | {dep.ecosystem} | {dep.scope} | {dep.manifest} | {lic} | {dep.license_class if dep.looked_up else 'n/a'} |")
+			out.append(f"| {dep.name} | {spec} | {dep.locked or ''} | {dep.ecosystem} | {dep.scope} | {dep.manifest} | {lic} | {dep.license_class if dep.looked_up else 'n/a'} |")
 		out.append("")
 	return "\n".join(out)

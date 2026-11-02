@@ -1,6 +1,6 @@
 # Reverse Engineer Anything (rea): spec
 
-Status: 0.7.0, 2026-11-02 (six roadmap rounds built). Self-contained tool. It is not part of the
+Status: 0.8.0, 2026-11-02 (seven roadmap rounds built). Self-contained tool. It is not part of the
 reverse-skill security router and is not wired into `skills/config/routing.json`.
 
 ## Problem
@@ -48,6 +48,10 @@ that prompted this tool showed the four usual faults:
 | Profiles are evaluated against the build context given; an undecided condition is unknown, never assumed; activeByDefault is a fallback | `activation.evaluate`, `maven.parse_pom` | `test_conditions_with_a_full_context`, `test_default_profile_applies_only_when_nothing_else_is_on`, `test_unknown_conditions_are_reported_not_guessed` |
 | `env.X` conditions use only the variables given with --env; `packaging` uses the POM's own packaging | `activation._property`, `activation._packaging` | `test_env_conditions_use_only_listed_variables`, `test_packaging_condition_uses_the_poms_packaging` |
 | NuGet ordering, ranges, floats and best match follow NuGet.Versioning; every extracted row of its unit tests passes | `nuget` | `NuGetTestSuiteTests`, `NuGetBestMatchTests` |
+| A lockfile beside the manifest (else at the root) pins the version every lookup is about, and the report says so | `deps._pin_from_lockfiles`, `lockfiles` | `test_lockfile_pins_the_version_and_the_lookup_uses_it`, `test_lockfile_in_the_manifests_folder_beats_the_root_one` |
+| Composer, Swift, pub and Hex dependencies are parsed; vcs and local ones are never looked up; a Composer constraint resolves as Composer does | `manifests`, `deps.resolve_license` | `ParserTests`, `ComposerConstraintTests`, `test_vcs_and_local_dependencies_are_never_looked_up` |
+| Only exact or locked versions are queried on OSV; every advisory is linked; OSV failing is "not checked", never "none" | `osv.check`, `osv.claims` | `test_only_exact_or_locked_versions_are_queried_and_findings_cite_osv`, `test_osv_failure_is_reported_as_not_checked` |
+| The HTML report is self-contained and escapes every value | `report.render` | `test_each_kind_renders_self_contained_html` |
 
 ## What "better" means here
 
@@ -114,7 +118,16 @@ Built in 0.7.0:
 17. `env.X` profile conditions from `--env NAME=value`, and Maven 4 `packaging` conditions from the POM itself.
 18. NuGet: a port of NuGet.Versioning (version parsing and ordering, one-interval ranges, floating versions, IsBetter/FindBestMatch), checked against 144 InlineData rows from NuGet's own unit tests (`tests/tools/nuget_cases/extract.py` rebuilds the fixture). Running NuGet's real library was not possible in the build session, so this is checked against NuGet's test data, not against the library itself as Maven's port was.
 
+Built in 0.8.0:
+
+19. Composer, Swift Package Manager, pub and Hex manifests, with licenses from Packagist, GitHub, pub.dev and hex.pm.
+20. Lockfiles for every ecosystem: versions are pinned before any lookup, and license lookups are version-specific where the registry allows.
+21. OSV.dev known-vulnerability checks for every exact or locked version, with a plan item.
+22. `rea report` and `--format html`: a self-contained HTML page for any result.
+
 Not yet built:
 
 - `draft` and `diff --judge` have not been run against the live API (no Anthropic credential in the build session); both are tested with a fake model client, and SDK 2.3.0 accepted the request shape.
-- A differential run against the real NuGet.Versioning library (needs a .NET SDK).
+- A differential run against the real NuGet.Versioning library (needs a .NET SDK, whose installer the build session's policy refused).
+- Swift packages hosted outside GitHub have no license lookup; GitHub lookups report the default branch's license, not the pinned release's.
+- OSV answers for Swift (SwiftURL) packages were not seen live, because this session's GitHub access is limited to attached repositories.

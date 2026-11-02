@@ -14,7 +14,8 @@ reverse-skill security router and not routed by it. Design and rules:
 ## Commands
 
 Run these from this `teardown/` directory. Every command takes
-`--format md|json` (except `draft`, which always writes JSON) and `--out FILE`.
+`--format md|json` (`repo`, `deps`, `company` and `diff` also take `html`; `draft`
+always writes JSON) and `--out FILE`.
 
 ```bash
 python3 -m rea repo owner/name                    # GitHub API teardown (GITHUB_TOKEN optional)
@@ -24,6 +25,7 @@ python3 -m rea company dossier.json [--verify]    # teardown from a sourced doss
 python3 -m rea verify dossier.json                # does each source page still contain its quote?
 python3 -m rea diff ours.json theirs.json         # two JSON reports -> gap list
 python3 -m rea draft --entity "Acme" --source https://... --out dossier.json
+python3 -m rea report result.json --out report.html   # or --format html on repo/deps/company/diff
 python3 -m rea rank examples/top-arr-2026-unverified.json
 ```
 
@@ -34,10 +36,29 @@ as `node_modules` are skipped), CI, security policy, contributor guide, docs,
 releases and bus factor. If GitHub truncates the listing, the report says so.
 
 **`deps`** finds `package.json`, `pyproject.toml`, `requirements*.txt`,
-`Cargo.toml`, `go.mod`, `pom.xml`, `*.csproj` and `Gemfile` anywhere in the tree
-(at most 10 manifests). It then looks up each runtime dependency's license:
-npm, PyPI, crates.io and RubyGems directly, and Go, Maven and NuGet through
-deps.dev. Every answer links to the response it came from. deps.dev answers
+`Cargo.toml`, `go.mod`, `pom.xml`, `*.csproj`, `Gemfile`, `composer.json`,
+`Package.swift`, `pubspec.yaml` and `mix.exs` anywhere in the tree (at most 10
+manifests). When a lockfile sits beside a manifest or at the root
+(`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`, `bun.lock`, `uv.lock`,
+`poetry.lock`, `pdm.lock`, `Pipfile.lock`, `Cargo.lock`, `Gemfile.lock`,
+`composer.lock`, `pubspec.lock`, `mix.lock`, `Package.resolved`,
+`packages.lock.json`), each dependency is pinned to the version it resolved
+to, and every lookup is about that version. It then looks up each runtime
+dependency's license: npm, PyPI, crates.io, RubyGems, Packagist, pub.dev and
+hex.pm directly, Go, Maven and NuGet through deps.dev, and Swift packages
+through the GitHub license of their repository (GitHub-hosted only, and the
+license of the default branch rather than the pinned tag). pub.dev and hex.pm
+report a package's latest license, which the table says. A Composer constraint
+without a lockfile resolves the way Composer does: the highest stable release
+it allows. Dependencies fetched from a git repository (`vcs`) and the project's
+own packages (`local`) are never looked up.
+
+Every dependency with an exact or locked version is also checked against
+OSV.dev for known vulnerabilities. Each advisory is linked, with its summary and
+severity where OSV states them, and becomes a "fix" item in the build plan.
+Dependencies with only a range are reported as not checked (OSV answers per
+version), and OSV not answering is reported, never read as "no
+vulnerabilities". `--no-osv` skips the check. Every answer links to the response it came from. deps.dev answers
 per version. A declared version that names one release is looked up as is. A
 Maven or NuGet range such as `[3.1,4.0)` resolves to the version the tool
 itself would pick from the published list. Maven's order is a port of Maven
@@ -129,6 +150,12 @@ pip install anthropic
 
 The SDK finds credentials in `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or
 an `ant auth login` profile.
+
+**`report`** turns the JSON output of `repo`, `deps`, `company` or `diff`
+into one self-contained HTML page: no external scripts, styles or fonts, every
+value escaped, source links kept, tables sortable by clicking a header, light or
+dark to match the viewer. `--format html` on those four commands writes the
+page directly.
 
 **`rank`** ranks figures only within the same metric kind (`arr`,
 `annualized_run_rate`, `revenue_guidance`, `acv`, `product_revenue_run_rate`,
