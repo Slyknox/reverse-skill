@@ -12,7 +12,7 @@ from rea.company import load_dossier  # noqa: E402
 from rea.deps import Dependency, FixtureRegistry, effective_version, teardown_deps  # noqa: E402
 from rea.diff import diff  # noqa: E402
 from rea.github import FixtureClient  # noqa: E402
-from rea.osv import MAX_QUERIES, QUERYBATCH, VULN, check, claims  # noqa: E402
+from rea.osv import MAX_QUERIES, QUERY, QUERYBATCH, check, claims, cvss3_base_score, cvss_rating  # noqa: E402
 from rea.render import to_json  # noqa: E402
 from rea.report import kind_of, render  # noqa: E402
 from rea.repo_teardown import teardown_repo  # noqa: E402
@@ -34,8 +34,8 @@ class OsvTests(unittest.TestCase):
 				record.append(body)
 			return {"results": results(body["queries"]) if callable(results) else results}
 		data = {"POST " + QUERYBATCH: post}
-		for vid, detail in (details or {}).items():
-			data[VULN + vid] = detail
+		if details:
+			data["POST " + QUERY] = lambda body: {"vulns": [{"id": vid, **d} for vid, d in details.items()]}
 		return FixtureRegistry(data)
 
 	def test_only_exact_or_locked_versions_are_queried_and_findings_cite_osv(self):
@@ -53,13 +53,21 @@ class OsvTests(unittest.TestCase):
 		self.assertEqual((result.checked, result.unchecked, result.failed), (3, 1, False))
 		self.assertEqual([(f.name, [a.id for a in f.advisories]) for f in result.findings], [("lodash", ["GHSA-1", "GHSA-2"])])
 		self.assertEqual(result.findings[0].advisories[0].severity, "High")
-		self.assertTrue(result.findings[0].advisories[1].severity.startswith("CVSS_V3 "))
+		self.assertEqual(result.findings[0].advisories[1].severity, "High (CVSS 3 base score 7.5)")
 		out = claims(result, "https://api.github.com/repos/a/b")
 		weakness = next(c for c in out if c.kind == "weakness")
 		self.assertIn("GHSA-1 (High): Prototype pollution", weakness.text)
 		self.assertEqual([e.url for e in weakness.evidence], ["https://osv.dev/vulnerability/GHSA-1", "https://osv.dev/vulnerability/GHSA-2"])
 		self.assertEqual(weakness.signal, "deps_vulnerable")
 		self.assertIn("3 dependencies with an exact or locked version were checked", next(c for c in out if c.kind == "fact").text)
+
+	def test_cvss3_scores_match_the_specification_examples(self):
+		for vector, want in (("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", 9.8), ("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:N/I:N/A:L", 5.3),
+				("CVSS:3.1/AV:N/AC:H/PR:N/UI:N/S:U/C:H/I:H/A:N", 7.4), ("CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:C/C:L/I:L/A:N", 6.1),
+				("CVSS:3.0/AV:L/AC:L/PR:L/UI:N/S:U/C:N/I:N/A:N", 0.0), ("CVSS:3.1/AV:N/AC:L/PR:L/UI:N/S:C/C:H/I:H/A:H", 9.9)):
+			self.assertEqual(cvss3_base_score(vector), want, vector)
+		self.assertIsNone(cvss3_base_score("CVSS:4.0/AV:N/AC:L/AT:N/PR:N/UI:N/VC:H/VI:H/VA:H/SC:N/SI:N/SA:N"))
+		self.assertEqual([cvss_rating(x) for x in (0, 3.9, 4.0, 6.9, 7.0, 8.9, 9.0)], ["None", "Low", "Medium", "Medium", "High", "High", "Critical"])
 
 	def test_osv_failure_is_reported_as_not_checked(self):
 		result = check([dep("lodash", "4.17.15", "npm")], FixtureRegistry({}), effective_version)

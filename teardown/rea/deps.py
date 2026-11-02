@@ -23,8 +23,8 @@ import urllib.request
 from dataclasses import dataclass, field
 
 from .evidence import Claim, Evidence, Ledger
-from .github import NotFound
-from .lockfiles import LOCKFILE_ECOSYSTEM, parse_lockfile
+from .github import API as GITHUB_API, NotFound
+from .lockfiles import LOCKFILE_ECOSYSTEM, parse_lockfile_full
 from .manifests import composer_pick, parse_composer, parse_mix, parse_package_swift, parse_pubspec
 from .maven import Resolver, parse_pom, resolve_dependencies, wanted_artifacts
 from .tree import Tree
@@ -95,7 +95,7 @@ class Dependency:
 	name: str
 	spec: str
 	ecosystem: str
-	scope: str  # runtime | dev | optional | indirect | local (the project's own code) | vcs (from a git repository); local and vcs are never looked up
+	scope: str  # runtime | dev | optional | indirect | transitive | transitive-dev | local (the project's own code) | vcs (from a git repository); local and vcs are never looked up
 	manifest: str
 	license: str | None = None
 	license_class: str = "unknown"
@@ -118,6 +118,7 @@ class DepsTeardown:
 	lockfiles: list[str] = field(default_factory=list)
 	lockfiles_unread: list[str] = field(default_factory=list)
 	not_checked: int = 0
+	transitive: int = 0  # packages taken from lockfiles beyond what the manifests declare
 	osv: OsvResult | None = None
 	ledger: Ledger = field(default_factory=Ledger)
 
@@ -503,19 +504,30 @@ def license_from(dep: Dependency, data) -> str | None:
 # ---------- teardown ----------
 
 def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], registry,
-		max_lookups: int = 40, include_dev: bool = False, max_pom_fetches: int = 25, build=None, osv: bool = True) -> DepsTeardown:
+		max_lookups: int = 40, include_dev: bool = False, max_pom_fetches: int = 25, build=None, osv: bool = True,
+		transitive: bool = True) -> DepsTeardown:
 	base = f"/repos/{repo}"
 	t = DepsTeardown(repo=repo)
 	files = set(tree.files) if tree is not None else set(top_level)
+
+	def read_file(path: str):
+		"""(text, url). The contents API returns no content past 1 MB; the blob API (by sha from the tree) does."""
+		r = client.get(f"{base}/contents/{urllib.parse.quote(path)}")
+		content = r.data.get("content") or ""
+		if not content and r.data.get("size", 0) > 0:
+			sha = r.data.get("sha") or (tree.shas.get(path) if tree is not None else None)
+			if sha:
+				r = client.get(f"{base}/git/blobs/{sha}")
+				content = r.data.get("content") or ""
+		return base64.b64decode(content).decode("utf-8", "replace"), r.url
 
 	def load_repo(path: str) -> str | None:
 		if path not in files:
 			return None
 		try:
-			r = client.get(f"{base}/contents/{urllib.parse.quote(path)}")
+			return read_file(path)[0]
 		except NotFound:
 			return None
-		return base64.b64decode(r.data.get("content", "")).decode("utf-8", "replace")
 
 	dirs = {posixpath.dirname(f) for f in files}
 	expanded = set()
@@ -532,26 +544,25 @@ def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], reg
 	resolver = Resolver(load_repo, registry.get_text, max_fetches=max_pom_fetches, ctx=build, file_exists=file_exists)
 	for path in find_manifests(tree, top_level):
 		try:
-			resp = client.get(f"{base}/contents/{urllib.parse.quote(path)}")
-			text = base64.b64decode(resp.data.get("content", "")).decode("utf-8", "replace")
+			text, url = read_file(path)
 			deps = parse_manifest(path, text, resolver)
 		except NotFound:
 			continue
 		except (ValueError, tomllib.TOMLDecodeError, ET.ParseError) as err:
-			t.ledger.add(Claim("fact", f"Could not parse {path}: {err}.", [Evidence(resp.url)]))
+			t.ledger.add(Claim("fact", f"Could not parse {path}: {err}.", [Evidence(f"{GITHUB_API}{base}/contents/{urllib.parse.quote(path)}")]))
 			continue
 		t.manifests.append(path)
 		for dep in deps:
-			dep.manifest_url = resp.url
+			dep.manifest_url = url
 		t.dependencies.extend(deps)
 
-	_pin_from_lockfiles(t, tree, top_level, load_repo)
+	_pin_from_lockfiles(t, tree, top_level, load_repo, transitive)
 
 	seen: dict[tuple, tuple] = {}
 	lookups = 0
 	skipped: set[tuple] = set()
 	for dep in t.dependencies:
-		if dep.scope in ("local", "vcs") or (dep.scope not in ("runtime", "optional") and not include_dev):
+		if dep.scope in ("local", "vcs") or (dep.scope not in ("runtime", "optional", "transitive") and not include_dev):
 			continue
 		key = (dep.ecosystem, dep.name.lower(), effective_version(dep) or dep.spec)
 		if key not in seen:
@@ -570,7 +581,7 @@ def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], reg
 
 	t.not_checked = len(skipped)
 	if osv:
-		candidates = [d for d in t.dependencies if d.scope in ("runtime", "optional") or include_dev]
+		candidates = [d for d in t.dependencies if d.scope in ("runtime", "optional", "transitive") or include_dev]
 		t.osv = osv_check(candidates, registry, effective_version)
 		for claim in osv_claims(t.osv, f"https://api.github.com/repos/{repo}"):
 			t.ledger.add(claim)
@@ -591,31 +602,48 @@ def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], reg
 	return t
 
 
-def _pin_from_lockfiles(t: DepsTeardown, tree, top_level: set[str], load_repo) -> None:
-	"""Pin each dependency with a non-exact spec to the version in a lockfile beside its manifest, else at the root."""
+def _pin_from_lockfiles(t: DepsTeardown, tree, top_level: set[str], load_repo, transitive: bool = True) -> None:
+	"""Pin each dependency with a non-exact spec to the version in a lockfile beside its manifest, else at the root.
+
+	With transitive, every other package the lockfile resolved is added too, scope "transitive"
+	(or "transitive-dev" where the lockfile marks it dev-only), with the lockfile as its manifest.
+	"""
 	paths = tree.files if tree is not None else sorted(top_level)
 	locks = [p for p in paths if p.rsplit("/", 1)[-1] in LOCKFILE_ECOSYSTEM]
 	locks = sorted(locks, key=lambda p: (p.count("/"), p))[:MAX_LOCKFILES]
-	index: dict[tuple[str, str], tuple[str, dict[str, str]]] = {}  # (dir, ecosystem) -> (path, versions)
+	index: dict[tuple[str, str], tuple[str, dict]] = {}  # (dir, ecosystem) -> (path, {name: (version, dev)})
 	for path in locks:
 		text = load_repo(path)
 		if text is None:
 			continue
-		versions = parse_lockfile(path.rsplit("/", 1)[-1], text)
-		if not versions:
+		packages = parse_lockfile_full(path.rsplit("/", 1)[-1], text)
+		if not packages:
 			t.lockfiles_unread.append(path)
 			continue
 		t.lockfiles.append(path)
-		index.setdefault((posixpath.dirname(path), LOCKFILE_ECOSYSTEM[path.rsplit("/", 1)[-1]]), (path, versions))
+		index.setdefault((posixpath.dirname(path), LOCKFILE_ECOSYSTEM[path.rsplit("/", 1)[-1]]), (path, packages))
+	declared: set[tuple[str, str]] = set()
 	for dep in t.dependencies:
+		declared.add((dep.ecosystem, dep.name.lower()))
 		if dep.scope in ("local", "vcs") or exact_version(dep):
 			continue
 		for where in (posixpath.dirname(dep.manifest), ""):
 			hit = index.get((where, dep.ecosystem))
 			if hit and dep.name.lower() in hit[1]:
-				dep.locked, dep.lock_source = hit[1][dep.name.lower()], hit[0]
+				dep.locked, dep.lock_source = hit[1][dep.name.lower()][0], hit[0]
 				dep.version_from = dep.version_from or f"locked in {hit[0]}"
 				break
+	if not transitive:
+		return
+	for (_where, eco), (path, packages) in index.items():
+		for name, (version, dev) in packages.items():
+			if (eco, name) in declared:
+				continue
+			declared.add((eco, name))
+			dep = Dependency(name, version, eco, "transitive-dev" if dev else "transitive", path)
+			dep.locked, dep.lock_source, dep.version_from = version, path, f"resolved in {path}"
+			t.dependencies.append(dep)
+			t.transitive += 1
 
 
 def _claims(t: DepsTeardown) -> None:
@@ -628,13 +656,16 @@ def _claims(t: DepsTeardown) -> None:
 		by_scope[d.scope] = by_scope.get(d.scope, 0) + 1
 	summary = ", ".join(f"{n} {s}" for s, n in sorted(by_scope.items()))
 	manifest_urls = list(dict.fromkeys(d.manifest_url for d in t.dependencies if d.manifest_url))
-	t.ledger.add(Claim("fact", f"{len(t.dependencies)} declared dependencies ({summary}) in {len(t.manifests)} manifest(s): {', '.join(t.manifests)}.",
+	t.ledger.add(Claim("fact", f"{len(t.dependencies)} dependencies ({summary}) from {len(t.manifests)} manifest(s): {', '.join(t.manifests)}.",
 		[Evidence(u) for u in manifest_urls[:5]] or [Evidence(f"https://api.github.com/repos/{t.repo}")]))
 
-	pinned = [d for d in t.dependencies if d.locked]
+	declared_n = len(t.dependencies) - t.transitive
+	pinned = [d for d in t.dependencies if d.locked and not d.scope.startswith("transitive")]
 	if t.lockfiles:
-		t.ledger.add(Claim("fact", f"{len(pinned)} of {len(t.dependencies)} dependencies were pinned to the version in a lockfile ({', '.join(t.lockfiles)}); "
-			"their license and vulnerability lookups are about that version.", [Evidence(u) for u in manifest_urls[:3]]))
+		text = f"{len(pinned)} of {declared_n} declared dependencies were pinned to the version in a lockfile ({', '.join(t.lockfiles)})"
+		if t.transitive:
+			text += f", and the lockfiles add {t.transitive} transitive packages the manifests do not name, checked for vulnerabilities and, within the lookup cap, licenses"
+		t.ledger.add(Claim("fact", text + "; every lookup is about the locked version.", [Evidence(u) for u in manifest_urls[:3]]))
 	if t.lockfiles_unread:
 		t.ledger.add(Claim("fact", f"Lockfile(s) found but not read (unrecognised shape): {', '.join(t.lockfiles_unread)}.", [Evidence(u) for u in manifest_urls[:1]]))
 	checked = [d for d in t.dependencies if d.looked_up]
@@ -670,7 +701,8 @@ def _claims(t: DepsTeardown) -> None:
 			[Evidence(u) for u in manifest_urls[:1]]))
 
 
-def deps_for_repo(client, repo: str, registry, max_lookups: int = 40, include_dev: bool = False, max_pom_fetches: int = 25, build=None, osv: bool = True) -> DepsTeardown:
+def deps_for_repo(client, repo: str, registry, max_lookups: int = 40, include_dev: bool = False, max_pom_fetches: int = 25, build=None, osv: bool = True,
+		transitive: bool = True) -> DepsTeardown:
 	"""Standalone entry point: reads the default branch and file listing, then the manifests."""
 	from .tree import load_tree
 
@@ -682,4 +714,4 @@ def deps_for_repo(client, repo: str, registry, max_lookups: int = 40, include_de
 	top = set()
 	if tree is None:
 		top = {e["name"] for e in client.get(f"{base}/contents").data if isinstance(e, dict)}
-	return teardown_deps(client, meta.get("full_name", repo), tree, top, registry, max_lookups, include_dev, max_pom_fetches, build, osv)
+	return teardown_deps(client, meta.get("full_name", repo), tree, top, registry, max_lookups, include_dev, max_pom_fetches, build, osv, transitive)
