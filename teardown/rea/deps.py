@@ -25,6 +25,7 @@ from .evidence import Claim, Evidence, Ledger
 from .github import NotFound
 from .maven import Resolver, parse_pom, resolve_dependencies, wanted_artifacts
 from .tree import Tree
+from .versions import is_range, pick
 
 MANIFESTS = {"package.json": "npm", "pyproject.toml": "pypi", "Cargo.toml": "crates", "go.mod": "go",
 	"pom.xml": "maven", "Gemfile": "rubygems"}
@@ -215,6 +216,10 @@ def _parse_pom(path: str, text: str, resolver=None) -> list[Dependency]:
 	if resolver is None:
 		resolver = Resolver(lambda _p: None, lambda _u: None, max_fetches=0)
 	res = resolver.resolve(pom, path, path, wanted_artifacts(pom))
+	if pom.applied_profiles:
+		resolver.notes.append(f"{path}: applied activeByDefault profile(s) {', '.join(pom.applied_profiles)} (Maven turns these off when another profile activates)")
+	if pom.skipped_profiles:
+		resolver.notes.append(f"{path}: profile(s) not applied because their activation depends on the build machine: {', '.join(pom.skipped_profiles)}")
 	out = []
 	for ga, version, scope, origin in resolve_dependencies(pom, res):
 		dep = Dependency(ga, version, "maven", scope, path)
@@ -310,13 +315,27 @@ def resolve_license(dep: Dependency, registry, budget: int) -> tuple[str | None,
 			return None, None, True, "lookup cap reached", 0
 		pkg_url = deps_dev_url(dep)
 		pkg = registry.get_json(pkg_url)
-		default = next((v["versionKey"]["version"] for v in (pkg or {}).get("versions", []) if v.get("isDefault")), None)
-		if not default:
+		published = [v["versionKey"]["version"] for v in (pkg or {}).get("versions", [])]
+		chosen, note = None, None
+		if dep.ecosystem in ("maven", "nuget") and is_range(dep.spec):
+			try:
+				chosen = pick(dep.ecosystem, dep.spec, published)
+			except ValueError:
+				chosen = None
+			else:
+				if chosen is None:
+					return None, pkg_url, pkg is not None, f"no published version is inside the declared range {dep.spec!r}", 1
+				rule = "highest, as Maven picks" if dep.ecosystem == "maven" else "lowest, as NuGet picks"
+				note = f"declared range {dep.spec!r}; license of {chosen}, the {rule}"
+		if chosen is None:
+			chosen = next((v["versionKey"]["version"] for v in (pkg or {}).get("versions", []) if v.get("isDefault")), None)
+			note = f"declared version {dep.spec!r} is not one release; license of the default version {chosen}"
+		if not chosen:
 			return None, pkg_url, pkg is not None, None, 1
-		url = deps_dev_url(dep, default)
+		url = deps_dev_url(dep, chosen)
 		data = registry.get_json(url)
 		lic = ", ".join(data.get("licenses") or []) or None if isinstance(data, dict) else None
-		return lic, url, data is not None, f"declared version {dep.spec!r} is not one release; license of the default version {default}", 2
+		return lic, url, data is not None, note, 2
 	if dep.ecosystem == "rubygems":
 		url = f"https://rubygems.org/api/v1/gems/{urllib.parse.quote(dep.name, safe='')}.json"
 		data = registry.get_json(url)
@@ -426,6 +445,10 @@ def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], reg
 	if problems:
 		t.ledger.add(Claim("fact", "Maven versions left unresolved: " + "; ".join(problems[:5])
 			+ (f"; and {len(problems) - 5} more" if len(problems) > 5 else "") + ".",
+			[Evidence(u) for u in dict.fromkeys(d.manifest_url for d in t.dependencies if d.ecosystem == "maven" and d.manifest_url)][:3]
+			or [Evidence(f"https://api.github.com/repos/{repo}")]))
+	if resolver.notes:
+		t.ledger.add(Claim("fact", "Maven profiles: " + "; ".join(resolver.notes) + ".",
 			[Evidence(u) for u in dict.fromkeys(d.manifest_url for d in t.dependencies if d.ecosystem == "maven" and d.manifest_url)][:3]
 			or [Evidence(f"https://api.github.com/repos/{repo}")]))
 	if resolver.fetched_urls:

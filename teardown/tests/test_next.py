@@ -63,16 +63,28 @@ class DepsDevLookupTests(unittest.TestCase):
 		lic, src, found, note, used = resolve_license(dep, FixtureRegistry({url: {"licenses": ["Apache-2.0"]}}), 5)
 		self.assertEqual((lic, src, found, note, used), ("Apache-2.0", url, True, None, 1))
 
-	def test_range_falls_back_to_default_version_and_says_so(self):
-		dep = Dependency("Serilog", "[3.1,4.0)", "nuget", "runtime", "App.csproj")
+	def test_unresolved_version_falls_back_to_default_version_and_says_so(self):
+		dep = Dependency("org.slf4j:slf4j-api", "${slf4j.version}", "maven", "runtime", "pom.xml")
 		reg = FixtureRegistry({
-			f"{DD}/nuget/packages/Serilog": {"versions": [{"versionKey": {"version": "3.0.0"}}, {"versionKey": {"version": "4.4.0"}, "isDefault": True}]},
-			f"{DD}/nuget/packages/Serilog/versions/4.4.0": {"licenses": ["Apache-2.0"]},
+			f"{DD}/maven/packages/org.slf4j%3Aslf4j-api": {"versions": [{"versionKey": {"version": "1.7.36"}}, {"versionKey": {"version": "2.0.13"}, "isDefault": True}]},
+			f"{DD}/maven/packages/org.slf4j%3Aslf4j-api/versions/2.0.13": {"licenses": ["MIT"]},
 		})
 		lic, src, found, note, used = resolve_license(dep, reg, 5)
-		self.assertEqual((lic, used), ("Apache-2.0", 2))
-		self.assertIn("default version 4.4.0", note)
+		self.assertEqual((lic, used), ("MIT", 2))
+		self.assertIn("default version 2.0.13", note)
 		self.assertEqual(resolve_license(dep, reg, 1)[1], None)  # not enough budget for two calls: skipped, not half-done
+
+	def test_nuget_range_resolves_to_its_lowest_version_and_empty_range_says_so(self):
+		reg = FixtureRegistry({
+			f"{DD}/nuget/packages/Serilog": {"versions": [{"versionKey": {"version": v}} for v in ("3.0.0", "3.1.0", "3.1.1", "4.4.0")]},
+			f"{DD}/nuget/packages/Serilog/versions/3.1.0": {"licenses": ["Apache-2.0"]},
+		})
+		lic, src, _, note, _ = resolve_license(Dependency("Serilog", "[3.1,4.0)", "nuget", "runtime", "App.csproj"), reg, 5)
+		self.assertEqual((lic, src.rsplit("/", 1)[-1]), ("Apache-2.0", "3.1.0"))
+		self.assertIn("lowest, as NuGet picks", note)
+		lic, _, _, note, used = resolve_license(Dependency("Serilog", "[5,6)", "nuget", "runtime", "App.csproj"), reg, 5)
+		self.assertEqual((lic, used), (None, 1))
+		self.assertIn("no published version is inside", note)
 
 	def test_multiple_licenses_are_all_applied(self):
 		dep = Dependency("example.com/mixed", "v1.0.0", "go", "runtime", "go.mod")

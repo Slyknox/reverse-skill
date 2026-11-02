@@ -195,7 +195,8 @@ def suggest_matches(ours: list[dict], theirs: list[dict], threshold: float = MAT
 	return out
 
 
-def diff(ours: dict, theirs: dict) -> dict:
+def diff(ours: dict, theirs: dict, judge=None) -> dict:
+	"""judge: optional complete(system, user, schema) -> (dict, model) for model-proposed company matches (rea.judge)."""
 	kind_a, kind_b = _report_kind(ours), _report_kind(theirs)
 	if kind_a != kind_b:
 		raise ValueError(f"cannot compare a {kind_a} report with a {kind_b} report")
@@ -203,6 +204,8 @@ def diff(ours: dict, theirs: dict) -> dict:
 	result = {"kind": kind_a, "ours": name(ours), "theirs": name(theirs),
 		"unverified": {"ours": len(ours["ledger"]["unverified"]), "theirs": len(theirs["ledger"]["unverified"])}}
 	if kind_a == "repo":
+		if judge is not None:
+			raise ValueError("--judge applies to company dossiers only; repo reports are compared check by check")
 		result["rows"] = diff_repos(ours, theirs)
 	else:
 		by_kind = {}
@@ -210,7 +213,14 @@ def diff(ours: dict, theirs: dict) -> dict:
 			by_kind[kind] = {side: [c for c in rep["ledger"]["sourced"] if c["kind"] == kind]
 				for side, rep in (("ours", ours), ("theirs", theirs))}
 		result["side_by_side"] = by_kind
-		result["suggested_matches"] = suggest_matches(ours["ledger"]["sourced"], theirs["ledger"]["sourced"])
+		matches = suggest_matches(ours["ledger"]["sourced"], theirs["ledger"]["sourced"])
+		for m in matches:
+			m["found_by"] = "vocabulary"
+		if judge is not None:
+			from .judge import judge_matches
+
+			matches += judge_matches(ours["ledger"]["sourced"], theirs["ledger"]["sourced"], judge, matches)
+		result["suggested_matches"] = matches
 	return result
 
 
@@ -234,13 +244,15 @@ def diff_md(result: dict) -> str:
 		matches = result.get("suggested_matches", [])
 		order = ["possible gap", "possible lead", "both lack", "both have", "similar model", "same topic"]
 		out += ["## Suggested matches", "",
-			f"Pairs whose wording overlaps (Dice score of {MATCH_THRESHOLD} or more, after mapping a short list of synonyms and opposites to shared concepts). Suggestions only: confirm each one. \"Opposite on\" names a concept the two claims state in opposite directions (for example fast versus slow).", ""]
+			f"Pairs whose wording overlaps (Dice score of {MATCH_THRESHOLD} or more, after mapping a short list of synonyms and opposites to shared concepts). Suggestions only: confirm each one. \"Opposite on\" names a concept the two claims state in opposite directions (for example fast versus slow). Pairs found by a model (`--judge`) have no score and show the model's reason.", ""]
 		if matches:
-			out += ["| Meaning | Score | Ours | Theirs | Shared words | Opposite on |", "|---|---|---|---|---|---|"]
-			for m in sorted(matches, key=lambda m: (order.index(m["meaning"]), -m["score"])):
+			out += ["| Meaning | Score | Ours | Theirs | Shared words | Opposite on | Found by |", "|---|---|---|---|---|---|---|"]
+			for m in sorted(matches, key=lambda m: (order.index(m["meaning"]), -(m["score"] or 0))):
+				score = f"{m['score']:.2f}" if m["score"] is not None else "-"
+				found = m.get("found_by", "vocabulary") + (f": {m['model_reason']}" if m.get("model_reason") else "")
 				src = lambda c: "".join(f" [src]({e['url']})" for e in c.get("evidence", [])[:1])
-				out.append(f"| {m['meaning']} | {m['score']:.2f} | [{m['ours']['kind']}] {m['ours']['text']}{src(m['ours'])} | "
-					f"[{m['theirs']['kind']}] {m['theirs']['text']}{src(m['theirs'])} | {', '.join(m['shared_words'])} | {', '.join(m.get('opposite_on', [])) or '-'} |")
+				out.append(f"| {m['meaning']} | {score} | [{m['ours']['kind']}] {m['ours']['text']}{src(m['ours'])} | "
+					f"[{m['theirs']['kind']}] {m['theirs']['text']}{src(m['theirs'])} | {', '.join(m['shared_words'])} | {', '.join(m.get('opposite_on', [])) or '-'} | {found.replace('|', '/')} |")
 			out.append("")
 		else:
 			out += ["No pairs overlap enough to suggest.", ""]
