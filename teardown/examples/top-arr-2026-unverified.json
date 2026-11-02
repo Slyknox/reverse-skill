@@ -1,0 +1,18 @@
+{
+  "_note": "Figures transcribed from a pasted chat answer. None has been checked against a primary source, so none carries a source and every row renders as UNVERIFIED. Add a sources entry (https url + quote) to a figure only after you have confirmed it.",
+  "figures": [
+    {"entity": "Anthropic", "kind": "annualized_run_rate", "low": 47000, "high": 74000, "as_of": "2026", "sources": [], "note": "range: sources disagree"},
+    {"entity": "OpenAI", "kind": "annualized_run_rate", "low": 24000, "high": 40000, "as_of": "2026", "sources": [], "note": "range: sources disagree"},
+    {"entity": "Palantir", "kind": "revenue_guidance", "low": 8150, "high": 8150, "as_of": "2026", "sources": []},
+    {"entity": "Databricks", "kind": "arr", "low": 6900, "high": 6900, "as_of": "2026", "sources": []},
+    {"entity": "Snowflake", "kind": "product_revenue_run_rate", "low": 5300, "high": 5300, "as_of": "2026", "sources": []},
+    {"entity": "Salesforce Agentforce + Data 360", "kind": "arr", "low": 3900, "high": 3900, "as_of": "2026", "sources": [], "note": "Agentforce alone about $1.5B"},
+    {"entity": "Genesys Cloud", "kind": "arr", "low": 2600, "high": 2600, "as_of": "2026", "sources": []},
+    {"entity": "Cursor", "kind": "arr", "low": 2000, "high": 2000, "as_of": "2026", "sources": [], "note": "2B+"},
+    {"entity": "GitHub Copilot", "kind": "analyst_estimate_arr", "low": 900, "high": 1100, "as_of": "2026", "sources": []},
+    {"entity": "Cognition (Devin)", "kind": "arr", "low": 900, "high": 900, "as_of": "2026", "sources": []},
+    {"entity": "Workday agentic AI", "kind": "arr", "low": 600, "high": 600, "as_of": "2026", "sources": []},
+    {"entity": "Harvey", "kind": "arr", "low": 195, "high": 195, "as_of": "2026", "sources": []},
+    {"entity": "Sierra", "kind": "arr", "low": 150, "high": 150, "as_of": "2026", "sources": []}
+  ]
+}
