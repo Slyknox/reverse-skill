@@ -2,8 +2,10 @@
 
 Repo reports are compared signal by signal, because each signal is a defined
 check. Company dossiers are free text, so they are shown side by side by kind,
-with suggested matches from word overlap. A suggestion is a pointer for a
-person to confirm, never a merge: the verdict on a pair stays "possible".
+with suggested matches from word overlap after mapping a small published
+vocabulary of synonyms and opposites (CONCEPTS) to shared concepts. A
+suggestion is a pointer for a person to confirm, never a merge: the verdict on
+a pair stays "possible".
 Only sourced claims are compared; unverified ones are counted, never matched.
 """
 
@@ -103,16 +105,72 @@ PAIRINGS = {
 }
 
 
+# A small, published vocabulary: each word maps to a concept, and words with an opposite
+# meaning share the concept with a polarity (+ or -). Matching compares concepts, so
+# "fast setup" and "slow onboarding" overlap; polarity is reported, never used to merge.
+# Extend these lists as you meet new wording; there is no model behind them.
+CONCEPTS: dict[str, tuple[str, str]] = {}
+
+
+def _group(concept: str, words: str, polarity: str = "") -> None:
+	for w in words.split():
+		CONCEPTS[w] = (concept, polarity)
+
+
+_group("onboarding", "onboarding onboard setup implementation implement rollout activation install installation")
+_group("price", "price pricing priced cost costs fee fees billing billed charge charges subscription")
+_group("customer", "customer customers client clients user users buyer buyers account accounts")
+_group("support", "support service helpdesk assistance")
+_group("security", "security secure compliance compliant soc privacy encryption")
+_group("integration", "integration integrations integrate connector connectors api apis")
+_group("speed", "fast quick quickly rapid instant minutes", "+")
+_group("speed", "slow slowly lengthy long weeks months delay delays delayed", "-")
+_group("cost_level", "cheap cheaper affordable inexpensive low-cost free", "+")
+_group("cost_level", "expensive costly pricey premium overpriced", "-")
+_group("ease", "easy easier simple intuitive straightforward self-serve", "+")
+_group("ease", "hard harder difficult complex complicated confusing steep", "-")
+_group("reliability", "reliable stable dependable uptime", "+")
+_group("reliability", "unreliable unstable outage outages downtime buggy bugs", "-")
+_group("growth", "growth grew growing increase increased rising rose", "+")
+_group("growth", "decline declined declining decrease decreased shrinking fell churn", "-")
+
+
+def _stem(w: str) -> str:
+	for suffix, keep in (("ing", 5), ("ed", 5), ("es", 5), ("s", 4)):
+		if w.endswith(suffix) and len(w) - len(suffix) >= keep - len(suffix) + 1 and not w.endswith("ss"):
+			return w[: -len(suffix)]
+	return w
+
+
+def _concepts(text: str) -> dict[str, str]:
+	"""term or concept -> polarity ("" when the word carries none)."""
+	out: dict[str, str] = {}
+	for w in re.findall(r"[a-z0-9$%]+(?:[.-][a-z0-9]+)*", text.lower()):
+		if w in STOPWORDS or not (len(w) > 2 or any(ch.isdigit() for ch in w)):
+			continue
+		hit = CONCEPTS.get(w) or CONCEPTS.get(_stem(w))
+		if hit:
+			concept, polarity = hit
+			out[concept] = out.get(concept) or polarity
+		else:
+			out[_stem(w)] = ""
+	return out
+
+
 def _terms(text: str) -> set[str]:
-	words = re.findall(r"[a-z0-9$%]+(?:\.[0-9]+)?", text.lower())
-	return {w[:-1] if len(w) > 4 and w.endswith("s") and not w.endswith("ss") else w
-		for w in words if w not in STOPWORDS and (len(w) > 2 or any(ch.isdigit() for ch in w))}
+	return set(_concepts(text))
 
 
 def similarity(a: str, b: str) -> float:
-	"""Dice overlap of content words, 0..1. Cheap, transparent, and blind to synonyms: hence "suggested"."""
+	"""Dice overlap of content words after mapping synonyms and opposites to shared concepts, 0..1."""
 	ta, tb = _terms(a), _terms(b)
 	return 2 * len(ta & tb) / (len(ta) + len(tb)) if ta and tb else 0.0
+
+
+def opposed(a: str, b: str) -> list[str]:
+	"""Shared concepts stated with opposite polarity, e.g. "speed" for "fast setup" vs "slow onboarding"."""
+	ca, cb = _concepts(a), _concepts(b)
+	return sorted(c for c in ca.keys() & cb.keys() if ca[c] and cb[c] and ca[c] != cb[c])
 
 
 def suggest_matches(ours: list[dict], theirs: list[dict], threshold: float = MATCH_THRESHOLD) -> list[dict]:
@@ -132,7 +190,8 @@ def suggest_matches(ours: list[dict], theirs: list[dict], threshold: float = MAT
 		used_a.add(i)
 		used_b.add(j)
 		out.append({"meaning": meaning, "score": round(score, 2), "ours": ours[i], "theirs": theirs[j],
-			"shared_words": sorted(_terms(ours[i]["text"]) & _terms(theirs[j]["text"]))})
+			"shared_words": sorted(_terms(ours[i]["text"]) & _terms(theirs[j]["text"])),
+			"opposite_on": opposed(ours[i]["text"], theirs[j]["text"])})
 	return out
 
 
@@ -175,13 +234,13 @@ def diff_md(result: dict) -> str:
 		matches = result.get("suggested_matches", [])
 		order = ["possible gap", "possible lead", "both lack", "both have", "similar model", "same topic"]
 		out += ["## Suggested matches", "",
-			f"Pairs whose wording overlaps (word overlap of {MATCH_THRESHOLD:.0%} or more). Suggestions only: confirm each one; synonyms are not detected.", ""]
+			f"Pairs whose wording overlaps (Dice score of {MATCH_THRESHOLD} or more, after mapping a short list of synonyms and opposites to shared concepts). Suggestions only: confirm each one. \"Opposite on\" names a concept the two claims state in opposite directions (for example fast versus slow).", ""]
 		if matches:
-			out += ["| Meaning | Score | Ours | Theirs | Shared words |", "|---|---|---|---|---|"]
+			out += ["| Meaning | Score | Ours | Theirs | Shared words | Opposite on |", "|---|---|---|---|---|---|"]
 			for m in sorted(matches, key=lambda m: (order.index(m["meaning"]), -m["score"])):
 				src = lambda c: "".join(f" [src]({e['url']})" for e in c.get("evidence", [])[:1])
 				out.append(f"| {m['meaning']} | {m['score']:.2f} | [{m['ours']['kind']}] {m['ours']['text']}{src(m['ours'])} | "
-					f"[{m['theirs']['kind']}] {m['theirs']['text']}{src(m['theirs'])} | {', '.join(m['shared_words'])} |")
+					f"[{m['theirs']['kind']}] {m['theirs']['text']}{src(m['theirs'])} | {', '.join(m['shared_words'])} | {', '.join(m.get('opposite_on', [])) or '-'} |")
 			out.append("")
 		else:
 			out += ["No pairs overlap enough to suggest.", ""]

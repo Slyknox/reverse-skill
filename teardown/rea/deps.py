@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 
 from .evidence import Claim, Evidence, Ledger
 from .github import NotFound
+from .maven import Resolver, parse_pom, resolve_dependencies, wanted_artifacts
 from .tree import Tree
 
 MANIFESTS = {"package.json": "npm", "pyproject.toml": "pypi", "Cargo.toml": "crates", "go.mod": "go",
@@ -94,6 +95,7 @@ class Dependency:
 	looked_up: bool = False
 	on_registry: bool = True
 	license_note: str | None = None
+	version_from: str | None = None  # where a version that is not written in the manifest came from
 	manifest_url: str | None = None
 
 
@@ -119,7 +121,7 @@ def _pep508(line: str) -> tuple[str, str] | None:
 	return (m.group(1), m.group(3).strip()) if m else None
 
 
-def parse_manifest(path: str, text: str) -> list[Dependency]:
+def parse_manifest(path: str, text: str, resolver=None) -> list[Dependency]:
 	name = path.rsplit("/", 1)[-1]
 	out: list[Dependency] = []
 
@@ -178,7 +180,7 @@ def parse_manifest(path: str, text: str) -> list[Dependency]:
 				if len(body) >= 2:
 					add(body[0], body[1], "go", "indirect" if "// indirect" in line else "runtime")
 	elif name == "pom.xml":
-		out.extend(_parse_pom(path, text))
+		out.extend(_parse_pom(path, text, resolver))
 	elif name.endswith(".csproj"):
 		root = ET.fromstring(text)
 		for ref in root.iter():
@@ -207,26 +209,17 @@ def _local(tag: str) -> str:
 	return tag.rsplit("}", 1)[-1]
 
 
-def _parse_pom(path: str, text: str) -> list[Dependency]:
-	root = ET.fromstring(text)
-	props: dict[str, str] = {}
-	for child in root:
-		name = _local(child.tag)
-		if name == "properties":
-			props.update({_local(p.tag): (p.text or "").strip() for p in child})
-		elif name == "version" and child.text:
-			props["project.version"] = child.text.strip()
+def _parse_pom(path: str, text: str, resolver=None) -> list[Dependency]:
+	"""Without a resolver, only the file's own properties and management are used (offline, no parent)."""
+	pom = parse_pom(text)
+	if resolver is None:
+		resolver = Resolver(lambda _p: None, lambda _u: None, max_fetches=0)
+	res = resolver.resolve(pom, path, path, wanted_artifacts(pom))
 	out = []
-	for top in root:
-		if _local(top.tag) != "dependencies":  # dependencyManagement only pins versions; it adds no dependency
-			continue
-		for dep in top:
-			fields = {_local(c.tag): (c.text or "").strip() for c in dep}
-			if not fields.get("groupId") or not fields.get("artifactId"):
-				continue
-			version = re.sub(r"\$\{([^}]+)\}", lambda m: props.get(m.group(1), m.group(0)), fields.get("version", ""))
-			scope = "dev" if fields.get("scope") == "test" else "runtime"
-			out.append(Dependency(f"{fields['groupId']}:{fields['artifactId']}", version or "*", "maven", scope, path))
+	for ga, version, scope, origin in resolve_dependencies(pom, res):
+		dep = Dependency(ga, version, "maven", scope, path)
+		dep.version_from = origin
+		out.append(dep)
 	return out
 
 
@@ -255,12 +248,38 @@ class Registry:
 			return None
 
 
+	def get_text(self, url: str, max_bytes: int = 2_000_000) -> str | None:
+		"""Plain text (Maven POMs). Retries 429 and 503 up to three times with growing waits, honouring Retry-After up to 10 s."""
+		import time
+
+		for attempt in range(4):
+			req = urllib.request.Request(url, headers={"User-Agent": "rea-teardown/0.4 (pom resolution)"})
+			try:
+				with urllib.request.urlopen(req, timeout=self.timeout) as resp:
+					body = resp.read(max_bytes + 1)
+					return None if len(body) > max_bytes else body.decode("utf-8", "replace")
+			except urllib.error.HTTPError as err:
+				if err.code in (429, 503) and attempt < 3:
+					retry_after = err.headers.get("Retry-After", "")
+					wait = float(retry_after) if retry_after.isdigit() else 2 ** attempt
+					time.sleep(min(wait, 10))
+					continue
+				return None
+			except (urllib.error.URLError, TimeoutError):
+				return None
+		return None
+
+
 class FixtureRegistry:
 	def __init__(self, responses: dict):
 		self.responses = responses
 
 	def get_json(self, url: str):
 		return self.responses.get(url)
+
+	def get_text(self, url: str):
+		value = self.responses.get(url)
+		return value if isinstance(value, str) else None
 
 
 _EXACT = re.compile(r"^v?\d+(\.\d+)*([-+.][0-9A-Za-z.+-]+)?$")
@@ -351,14 +370,26 @@ def license_from(dep: Dependency, data) -> str | None:
 # ---------- teardown ----------
 
 def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], registry,
-		max_lookups: int = 40, include_dev: bool = False) -> DepsTeardown:
+		max_lookups: int = 40, include_dev: bool = False, max_pom_fetches: int = 25) -> DepsTeardown:
 	base = f"/repos/{repo}"
 	t = DepsTeardown(repo=repo)
+	files = set(tree.files) if tree is not None else set(top_level)
+
+	def load_repo(path: str) -> str | None:
+		if path not in files:
+			return None
+		try:
+			r = client.get(f"{base}/contents/{urllib.parse.quote(path)}")
+		except NotFound:
+			return None
+		return base64.b64decode(r.data.get("content", "")).decode("utf-8", "replace")
+
+	resolver = Resolver(load_repo, registry.get_text, max_fetches=max_pom_fetches)
 	for path in find_manifests(tree, top_level):
 		try:
 			resp = client.get(f"{base}/contents/{urllib.parse.quote(path)}")
 			text = base64.b64decode(resp.data.get("content", "")).decode("utf-8", "replace")
-			deps = parse_manifest(path, text)
+			deps = parse_manifest(path, text, resolver)
 		except NotFound:
 			continue
 		except (ValueError, tomllib.TOMLDecodeError, ET.ParseError) as err:
@@ -391,6 +422,15 @@ def teardown_deps(client, repo: str, tree: Tree | None, top_level: set[str], reg
 		dep.looked_up = True
 
 	t.not_checked = len(skipped)
+	problems = resolver.summary()
+	if problems:
+		t.ledger.add(Claim("fact", "Maven versions left unresolved: " + "; ".join(problems[:5])
+			+ (f"; and {len(problems) - 5} more" if len(problems) > 5 else "") + ".",
+			[Evidence(u) for u in dict.fromkeys(d.manifest_url for d in t.dependencies if d.ecosystem == "maven" and d.manifest_url)][:3]
+			or [Evidence(f"https://api.github.com/repos/{repo}")]))
+	if resolver.fetched_urls:
+		t.ledger.add(Claim("fact", f"Maven versions were resolved through {len(resolver.fetched_urls)} parent or BOM POM(s) read from Maven Central.",
+			[Evidence(u) for u in resolver.fetched_urls[:5]]))
 	_claims(t)
 	return t
 
@@ -441,7 +481,7 @@ def _claims(t: DepsTeardown) -> None:
 			[Evidence(u) for u in manifest_urls[:1]]))
 
 
-def deps_for_repo(client, repo: str, registry, max_lookups: int = 40, include_dev: bool = False) -> DepsTeardown:
+def deps_for_repo(client, repo: str, registry, max_lookups: int = 40, include_dev: bool = False, max_pom_fetches: int = 25) -> DepsTeardown:
 	"""Standalone entry point: reads the default branch and file listing, then the manifests."""
 	from .tree import load_tree
 
@@ -453,4 +493,4 @@ def deps_for_repo(client, repo: str, registry, max_lookups: int = 40, include_de
 	top = set()
 	if tree is None:
 		top = {e["name"] for e in client.get(f"{base}/contents").data if isinstance(e, dict)}
-	return teardown_deps(client, meta.get("full_name", repo), tree, top, registry, max_lookups, include_dev)
+	return teardown_deps(client, meta.get("full_name", repo), tree, top, registry, max_lookups, include_dev, max_pom_fetches)
