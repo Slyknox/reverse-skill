@@ -1,6 +1,6 @@
 # Reverse Engineer Anything (rea): spec
 
-Status: MVP 0.1.0, 2026-11-02. Self-contained tool. It is not part of the
+Status: 0.2.0, 2026-11-02 (roadmap items 1 to 5 built). Self-contained tool. It is not part of the
 reverse-skill security router and is not wired into `skills/config/routing.json`.
 
 ## Problem
@@ -29,6 +29,11 @@ that prompted this tool showed the four usual faults:
 | Repo checks cite the API response they read and say what was not inspected | `repo_teardown` | `test_strong_repo_reads_dot_github_and_workflows` |
 | Plan items come only from sourced claims, fixes before keeps, each with a measure of done | `RepoTeardown.plan`, `CompanyTeardown.plan` | `test_weak_repo_signals_and_fix_items_come_first` |
 | The engine never invents company facts; a weakness without a countermeasure becomes an explicit TODO | `company.load_dossier` | `test_unsourced_claims_never_reach_the_plan` |
+| Tests and lockfiles are found anywhere in the tree; vendored folders are skipped; a truncated listing is disclosed | `tree.Tree`, `repo_teardown` | `test_nested_tests_and_lockfiles_found_and_vendored_folders_skipped`, `test_truncated_listing_is_disclosed` |
+| Every dependency license links to the registry answer; packages not on the registry and unidentified licenses are kept apart; the lookup cap is reported | `deps` | `test_teardown_reads_nested_manifest_skips_vendored_and_cites_registry`, `test_lookup_cap_counts_the_rest` |
+| With `--verify`, a claim stays sourced only if every quote is found on its fetched page; only https on public hosts is fetched | `verify`, `company.load_dossier(fetcher=...)` | `test_company_verify_moves_unconfirmed_claims_to_unverified`, `test_live_fetcher_refuses_non_public_and_plain_http` |
+| Diffs compare only sourced claims and refuse to compare different report kinds | `diff` | `test_repo_gaps_and_leads`, `test_kind_mismatch_and_bad_input_are_refused` |
+| A model-drafted claim keeps a source only if its quote is on a page the user named; nothing is truncated | `draft.draft_dossier` | `test_only_quotes_found_on_their_page_keep_a_source`, `test_refuses_without_pages_and_never_truncates` |
 
 ## What "better" means here
 
@@ -57,10 +62,19 @@ the roadmap, not any output:
 | Agents inside the system of record | Salesforce | Data is already there | Lock-in | Output is plain Markdown/JSON, so nothing is locked in |
 | Whole-codebase indexing | Cursor | Better context | Privacy and cost | `repo` reads only public API metadata today (see roadmap) |
 
-## Roadmap (not built)
+## Roadmap
 
-1. `repo`: read nested lockfiles and test folders in monorepos through the git tree API.
-2. `repo`: dependency teardown (manifests to dependency list, with license per dependency).
-3. `company`: optional fetch-and-quote check that confirms each source URL still contains its quote.
-4. Diff two teardowns (yours against a competitor's) into a gap list.
-5. An LLM-assisted dossier drafter whose output goes through the same ledger, so an unsourced model claim stays unverified.
+Built in 0.2.0:
+
+1. `repo` reads tests and lockfiles across the whole tree through the git tree API.
+2. `deps`: dependency teardown with a license per dependency from npm, PyPI and crates.io.
+3. `verify` and `company --verify`: fetch each source and confirm its quote is on the page.
+4. `diff`: two teardowns into a gap list.
+5. `draft`: Claude proposes claims; each goes through the same quote check, so an unconfirmed claim stays unverified.
+
+Not yet built:
+
+- License lookups for Go modules (there is no registry license API) and for Maven, RubyGems and NuGet.
+- PDF sources for `verify` (reported today as needing a check by hand).
+- Matching free-text company claims across two dossiers in `diff`.
+- `draft` has not been run against the live API from the build session (no API key there); the request shape was accepted by SDK 2.3.0.

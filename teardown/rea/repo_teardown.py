@@ -1,7 +1,8 @@
 """Teardown of a public GitHub repository from what the GitHub API reports.
 
-Every claim cites the API response or page it came from. Checks only look at
-what the API shows (top-level files, workflows, releases, contributors); a
+Every claim cites the API response or page it came from. Checks read the
+recursive file listing (git tree API) where GitHub returns it, and fall back to
+top-level files when it does not; a
 "not found" result means "not found where we looked", and the claim text says so.
 """
 
@@ -12,10 +13,10 @@ from datetime import datetime, timezone
 
 from .evidence import Claim, Evidence, Ledger
 from .github import NotFound
+from .tree import TEST_DIRS, Tree, load_tree
 
 PERMISSIVE = {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "0BSD", "Unlicense", "MPL-2.0"}
 COPYLEFT = {"GPL-2.0", "GPL-3.0", "AGPL-3.0", "LGPL-2.1", "LGPL-3.0"}
-TEST_DIRS = {"tests", "test", "__tests__", "spec", "e2e", "testing"}
 LOCKFILES = {"package-lock.json", "pnpm-lock.yaml", "yarn.lock", "bun.lockb", "bun.lock", "uv.lock",
 	"poetry.lock", "Pipfile.lock", "Cargo.lock", "go.sum", "Gemfile.lock", "composer.lock"}
 
@@ -27,7 +28,7 @@ PLAN = {
 	"active": ("keep", "Keep a visible release and commit cadence.", "Default branch pushed within the last 30 days."),
 	"stale": ("fix", "Plan for maintenance from day one: an owner, a cadence, and a deprecation policy.", "Named maintainer and a commit within every 90 days."),
 	"archived": ("fix", "Treat as unmaintained: fork deliberately or pick a maintained alternative.", "Dependency on this repo replaced or forked with an owner."),
-	"tests_present": ("keep", "Keep a test suite that runs on every change.", "Top-level test directory and CI running it on pull requests."),
+	"tests_present": ("keep", "Keep a test suite that runs on every change.", "Tests in the repository and CI running them on pull requests."),
 	"tests_missing": ("fix", "Write tests alongside the first feature, not after.", "A test directory exists and CI fails when a test fails."),
 	"ci_present": ("keep", "Run CI on every push and pull request.", "At least one workflow under .github/workflows."),
 	"ci_missing": ("fix", "Add CI that runs lint, type checks and tests on every pull request.", "A workflow that blocks merge on failure."),
@@ -42,6 +43,9 @@ PLAN = {
 	"bus_factor_low": ("fix", "Spread knowledge: no single person should hold most of the commits.", "Top contributor below 50% of contributions on the default branch."),
 	"contributors_broad": ("keep", "Keep a broad contributor base with clear review rules.", "10 or more contributors."),
 	"docs": ("keep", "Keep user docs next to the code.", "docs/ directory or a README of 2 KB or more."),
+	"deps_copyleft": ("decide", "Decide per copyleft dependency: replace it, isolate it behind a process boundary, or accept the source-release obligation in writing.", "Each copyleft dependency has a recorded decision."),
+	"deps_license_unknown": ("fix", "Resolve every dependency license the registry does not state; an unknown license is not a permission.", "Every runtime dependency has an identified license."),
+	"deps_licenses_clear": ("keep", "Keep a license check on new dependencies.", "A license allow-list enforced in CI."),
 	"docs_thin": ("fix", "Write a README that covers install, a first example and limits.", "README of 2 KB or more."),
 }
 
@@ -51,6 +55,8 @@ class RepoTeardown:
 	repo: str
 	html_url: str
 	facts: dict = field(default_factory=dict)
+	tree: Tree | None = None
+	top_level: set = field(default_factory=set)
 	ledger: Ledger = field(default_factory=Ledger)
 
 	def plan(self) -> list[dict]:
@@ -121,12 +127,22 @@ def teardown_repo(client, repo: str, now: datetime | None = None) -> RepoTeardow
 	root = client.get(f"{base}/contents")
 	names = {e["name"] for e in root.data if isinstance(e, dict)}
 	lower = {n.lower(): n for n in names}
+	t.top_level = names
 	root_url = root.url
 
-	if names & TEST_DIRS:
+	tree = load_tree(client, base, d.get("default_branch") or "HEAD")
+	t.tree = tree
+	partial = " The file listing was truncated by GitHub, so this may be incomplete." if tree and tree.truncated else ""
+	if tree is not None:
+		where = tree.test_locations()
+		if where:
+			add("strength", f"Tests found in: {', '.join(where)}.", "tests_present", tree.url)
+		else:
+			add("weakness", f"No test folders or test-named files anywhere in the repository.{partial}", "tests_missing", tree.url)
+	elif names & TEST_DIRS:
 		add("strength", f"Top-level test directory: {', '.join(sorted(names & TEST_DIRS))}.", "tests_present", root_url)
 	else:
-		add("weakness", "No top-level test directory found (tests may live deeper).", "tests_missing", root_url)
+		add("weakness", "No top-level test directory found (full file listing unavailable; tests may live deeper).", "tests_missing", root_url)
 
 	github_dir = set()
 	if ".github" in names:
@@ -153,11 +169,17 @@ def teardown_repo(client, repo: str, now: datetime | None = None) -> RepoTeardow
 	else:
 		add("weakness", "No CONTRIBUTING.md in the root or .github.", "contributing_missing", root_url)
 
-	locks = names & LOCKFILES
-	if locks:
-		add("strength", f"Committed lockfile(s): {', '.join(sorted(locks))}.", "lockfile", root_url)
+	if tree is not None:
+		locks = tree.named(LOCKFILES)
+		if locks:
+			shown = ", ".join(locks[:5]) + (f" and {len(locks) - 5} more" if len(locks) > 5 else "")
+			add("strength", f"Committed lockfile(s): {shown}.", "lockfile", tree.url)
+		else:
+			add("weakness", f"No lockfile anywhere in the repository.{partial}", "lockfile_missing", tree.url)
+	elif names & LOCKFILES:
+		add("strength", f"Committed lockfile(s): {', '.join(sorted(names & LOCKFILES))}.", "lockfile", root_url)
 	else:
-		add("weakness", "No lockfile at the top level (monorepos may keep them deeper).", "lockfile_missing", root_url)
+		add("weakness", "No lockfile at the top level (full file listing unavailable).", "lockfile_missing", root_url)
 	if "Dockerfile" in names or "docker-compose.yml" in names or "compose.yaml" in names:
 		add("fact", "Container build files at the top level.", url=root_url)
 

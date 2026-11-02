@@ -1,0 +1,22 @@
+{
+ "https://registry.npmjs.org/left-pad/latest": {
+  "license": "SEE LICENSE IN LICENSE.txt"
+ },
+ "https://registry.npmjs.org/gpl-thing/latest": {
+  "license": "GPL-3.0-or-later"
+ },
+ "https://pypi.org/pypi/requests/json": {
+  "info": {
+   "license_expression": "Apache-2.0",
+   "classifiers": []
+  }
+ },
+ "https://pypi.org/pypi/mystery-lib/json": {
+  "info": {
+   "license": "",
+   "classifiers": [
+    "License :: OSI Approved :: MIT License"
+   ]
+  }
+ }
+}

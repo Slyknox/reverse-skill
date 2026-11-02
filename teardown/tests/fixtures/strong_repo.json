@@ -1,13 +1,141 @@
 {
-  "/repos/acme/strong": {"data": {"full_name": "acme/strong", "html_url": "https://github.com/acme/strong",
-    "stargazers_count": 12, "forks_count": 3, "open_issues_count": 4, "default_branch": "main",
-    "pushed_at": "2026-10-30T00:00:00Z", "license": {"spdx_id": "Apache-2.0"}, "archived": false}},
-  "/repos/acme/strong/languages": {"data": {"Python": 1000}},
-  "/repos/acme/strong/contents": {"data": [
-    {"name": "README.md", "size": 8000}, {"name": "docs", "size": 0}, {"name": "tests", "size": 0},
-    {"name": ".github", "size": 0}, {"name": "uv.lock", "size": 100}, {"name": "LICENSE", "size": 100}]},
-  "/repos/acme/strong/contents/.github": {"data": [{"name": "workflows"}, {"name": "SECURITY.md"}, {"name": "CONTRIBUTING.md"}]},
-  "/repos/acme/strong/contents/.github/workflows": {"data": [{"name": "ci.yml"}, {"name": "README.txt"}]},
-  "/repos/acme/strong/releases?per_page=1": {"data": [{"tag_name": "v1.2.0", "published_at": "2026-10-01T00:00:00Z"}]},
-  "/repos/acme/strong/contributors?per_page=100&anon=1": {"data": [{"login": "a", "contributions": 40}], "link": "<https://api.github.com/repositories/1/contributors?per_page=100&anon=1&page=2>; rel=\"next\", <https://api.github.com/repositories/1/contributors?per_page=100&anon=1&page=3>; rel=\"last\""}
+ "/repos/acme/strong": {
+  "data": {
+   "full_name": "acme/strong",
+   "html_url": "https://github.com/acme/strong",
+   "stargazers_count": 12,
+   "forks_count": 3,
+   "open_issues_count": 4,
+   "default_branch": "main",
+   "pushed_at": "2026-10-30T00:00:00Z",
+   "license": {
+    "spdx_id": "Apache-2.0"
+   },
+   "archived": false
+  }
+ },
+ "/repos/acme/strong/languages": {
+  "data": {
+   "Python": 1000
+  }
+ },
+ "/repos/acme/strong/contents": {
+  "data": [
+   {
+    "name": "README.md",
+    "size": 8000
+   },
+   {
+    "name": "docs",
+    "size": 0
+   },
+   {
+    "name": "tests",
+    "size": 0
+   },
+   {
+    "name": ".github",
+    "size": 0
+   },
+   {
+    "name": "uv.lock",
+    "size": 100
+   },
+   {
+    "name": "LICENSE",
+    "size": 100
+   }
+  ]
+ },
+ "/repos/acme/strong/contents/.github": {
+  "data": [
+   {
+    "name": "workflows"
+   },
+   {
+    "name": "SECURITY.md"
+   },
+   {
+    "name": "CONTRIBUTING.md"
+   }
+  ]
+ },
+ "/repos/acme/strong/contents/.github/workflows": {
+  "data": [
+   {
+    "name": "ci.yml"
+   },
+   {
+    "name": "README.txt"
+   }
+  ]
+ },
+ "/repos/acme/strong/releases?per_page=1": {
+  "data": [
+   {
+    "tag_name": "v1.2.0",
+    "published_at": "2026-10-01T00:00:00Z"
+   }
+  ]
+ },
+ "/repos/acme/strong/contributors?per_page=100&anon=1": {
+  "data": [
+   {
+    "login": "a",
+    "contributions": 40
+   }
+  ],
+  "link": "<https://api.github.com/repositories/1/contributors?per_page=100&anon=1&page=2>; rel=\"next\", <https://api.github.com/repositories/1/contributors?per_page=100&anon=1&page=3>; rel=\"last\""
+ },
+ "/repos/acme/strong/git/trees/main?recursive=1": {
+  "data": {
+   "truncated": false,
+   "tree": [
+    {
+     "path": "README.md",
+     "type": "blob"
+    },
+    {
+     "path": "packages/api/src/server.test.ts",
+     "type": "blob"
+    },
+    {
+     "path": "packages/api/package.json",
+     "type": "blob"
+    },
+    {
+     "path": "packages/api/pnpm-lock.yaml",
+     "type": "blob"
+    },
+    {
+     "path": "requirements.txt",
+     "type": "blob"
+    },
+    {
+     "path": "node_modules/x/test/a.js",
+     "type": "blob"
+    },
+    {
+     "path": "node_modules/x/package.json",
+     "type": "blob"
+    },
+    {
+     "path": "docs",
+     "type": "tree"
+    }
+   ]
+  }
+ },
+ "/repos/acme/strong/contents/packages/api/package.json": {
+  "data": {
+   "encoding": "base64",
+   "content": "eyJkZXBlbmRlbmNpZXMiOiB7ImxlZnQtcGFkIjogIl4xLjMuMCIsICJncGwtdGhpbmciOiAiMi4wLjAifSwgImRldkRlcGVuZGVuY2llcyI6IHsiamVzdCI6ICJeMjkifX0="
+  }
+ },
+ "/repos/acme/strong/contents/requirements.txt": {
+  "data": {
+   "encoding": "base64",
+   "content": "cmVxdWVzdHM+PTIuMzEgICMgaHR0cAotciBvdGhlci50eHQKbXlzdGVyeS1saWI9PTAuMQpwcml2YXRlLXBrZz09MS4wCm15c3RlcnktbGliPT0wLjEK"
+  }
+ }
 }
