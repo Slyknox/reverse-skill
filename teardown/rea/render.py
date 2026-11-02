@@ -116,6 +116,7 @@ def deps_md(d) -> str:
 			lic = f"[{dep.license or 'not stated'}]({dep.license_source})" if dep.license_source else "not looked up"
 			if dep.license_note:
 				lic += f" ({dep.license_note})"
-			out.append(f"| {dep.name} | `{dep.spec}` | {dep.ecosystem} | {dep.scope} | {dep.manifest} | {lic} | {dep.license_class if dep.looked_up else 'n/a'} |")
+			spec = f"`{dep.spec}`" + (f" ({dep.version_from})" if getattr(dep, "version_from", None) else "")
+			out.append(f"| {dep.name} | {spec} | {dep.ecosystem} | {dep.scope} | {dep.manifest} | {lic} | {dep.license_class if dep.looked_up else 'n/a'} |")
 		out.append("")
 	return "\n".join(out)

@@ -155,7 +155,9 @@ class SuggestedMatchTests(unittest.TestCase):
 		result = diff(ours, theirs)
 		self.assertEqual(len(result["suggested_matches"]), 1)
 		md = diff_md(result)
-		self.assertIn("| possible gap | 0.44 |", md)
+		self.assertEqual(result["suggested_matches"][0]["meaning"], "possible gap")
+		self.assertEqual(result["suggested_matches"][0]["opposite_on"], ["speed"])  # long versus fast
+		self.assertIn("| possible gap |", md)
 		self.assertIn("Suggestions only", md)
 
 

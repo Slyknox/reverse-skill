@@ -6,7 +6,8 @@ you a pros and cons matrix and an original build plan: what to keep, and what
 to fix, each with a measure of done.
 
 It is a standalone tool (Python 3.11+). Everything uses only the standard
-library except `draft` (needs the Anthropic SDK) and PDF sources (need pypdf). It is separate from the
+library except `draft` (needs the Anthropic SDK), PDF sources (need pypdf) and
+scanned PDFs (also need Pillow and the `tesseract` command). It is separate from the
 reverse-skill security router and not routed by it. Design and rules:
 [SPEC.md](SPEC.md).
 
@@ -41,7 +42,14 @@ per version. A declared version that names one release is looked up as is. A
 range or an unresolved Maven property uses the package's default version, and
 the dependency table says so. When several licenses are listed, all of them
 apply. It flags copyleft licenses, dependencies with no identified license, and
-packages not on the registry. The project's own local and workspace packages
+packages not on the registry. For Maven, a dependency without a version gets
+one the way Maven would: from the parent POM (read from the repository when
+`relativePath` points at it, else from Maven Central), from BOMs imported in
+`dependencyManagement`, with `${properties}` taken from the whole chain and
+the child's values winning. The table names the POM each version came from.
+BOMs whose groupId matches an unmanaged dependency are read first, and
+`--max-pom-fetches` (default 25) caps Maven Central reads. Anything left over
+is reported as unresolved, not guessed. The project's own local and workspace packages
 (Cargo `path`, npm `workspace:`/`file:`, Gemfile `path:`) are marked `local`
 and never looked up. `--max-lookups` (default 40) caps calls, and
 `--include-dev` adds dev dependencies.
@@ -59,16 +67,22 @@ is exact after evening out case, whitespace, curly quotes, dashes and HTML
 entities. PDF sources (up to 25 MB and 500 pages) are read with the optional
 `pypdf` package (`pip install pypdf`). A word broken across lines with a hyphen
 matches with the hyphen dropped ("million") or kept ("cloud-based"). Without
-pypdf, an encrypted PDF, or a scanned PDF with no text, the source is reported
-as needing a check by hand rather than guessed.
+pypdf, or for an encrypted PDF, the source is reported as needing a check by
+hand rather than guessed. A scanned PDF with no text layer (up to 30 pages) is
+read with OCR when the `tesseract` command and Pillow are installed. A match in
+OCR text is still marked for confirming by eye, because OCR can misread.
 
 **`diff`** compares two reports made with `--format json`. Repo reports are
 compared check by check (gap, lead, both have, both lack). Company reports are
 shown side by side by kind. Above that is a list of suggested matches: pairs of
 sourced claims whose content words overlap (Dice score of 0.4 or more),
-one-to-one. A weakness of yours paired with a strength of theirs is a possible
-gap, and the reverse is a possible lead. These are suggestions to confirm. The
-overlap measure does not understand synonyms, so it can miss real matches.
+one-to-one. Before scoring, a short published vocabulary (`CONCEPTS` in
+`rea/diff.py`) maps synonyms and opposites to shared concepts, so "setup" and
+"onboarding" match, and "slow" and "fast" both count as speed. A weakness of
+yours paired with a strength of theirs is a possible gap, and the reverse is a
+possible lead. An "opposite on" column names concepts the two claims state in
+opposite directions. These are suggestions to confirm. Wording outside the
+vocabulary still has to overlap word for word.
 
 **`draft`** fetches the pages you name and asks Claude (`claude-opus-5-5` by
 default, `--model` to change it) to propose claims and figures, each with a

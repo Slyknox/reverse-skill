@@ -25,3 +25,29 @@ def make_pdf(lines: list[str]) -> bytes:
 	out += b"".join(f"{o:010d} 00000 n \n".encode() for o in offsets)
 	out += f"trailer\n<< /Size {len(objects) + 1} /Root 1 0 R >>\nstartxref\n{xref}\n%%EOF\n".encode()
 	return bytes(out)
+
+
+def make_scanned_pdf(lines: list[str]) -> bytes:
+	"""A PDF whose only content is an image of the text (no text layer). Needs Pillow."""
+	import io
+
+	from PIL import Image, ImageDraw, ImageFont
+
+	font = ImageFont.truetype("DejaVuSans.ttf", 36) if _has_dejavu() else ImageFont.load_default(size=36)
+	img = Image.new("L", (1400, 120 + 60 * len(lines)), 255)
+	draw = ImageDraw.Draw(img)
+	for i, line in enumerate(lines):
+		draw.text((60, 60 + 60 * i), line, fill=0, font=font)
+	buf = io.BytesIO()
+	img.save(buf, format="PDF", resolution=150)
+	return buf.getvalue()
+
+
+def _has_dejavu() -> bool:
+	from PIL import ImageFont
+
+	try:
+		ImageFont.truetype("DejaVuSans.ttf", 10)
+		return True
+	except OSError:
+		return False

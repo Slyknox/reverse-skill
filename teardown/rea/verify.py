@@ -163,6 +163,53 @@ class Fetcher:
 		return html_to_text(raw) if ctype in ("text/html", "application/xhtml+xml") else raw
 
 
+OCR_MARK = "[rea: text below was read by OCR from a scanned PDF]\n"
+MAX_OCR_PAGES = 30
+OCR_TIMEOUT = 60  # seconds per page image
+
+
+def ocr_pages(reader) -> str:
+	"""OCR the images of a PDF that has no text layer, with the tesseract command if it is installed.
+
+	Each page's embedded images are converted to PNG (Pillow) and passed to
+	`tesseract stdin stdout`. Refuses documents over MAX_OCR_PAGES rather than
+	reading part of them.
+	"""
+	import shutil
+	import subprocess
+
+	exe = shutil.which("tesseract")
+	if exe is None:
+		raise FetchError("unsupported_type", "PDF has no text layer (scanned); install tesseract to OCR it, or check it by hand")
+	if len(reader.pages) > MAX_OCR_PAGES:
+		raise FetchError("unsupported_type", f"scanned PDF has {len(reader.pages)} pages, over the {MAX_OCR_PAGES}-page OCR limit; check it by hand")
+	try:
+		import io
+
+		from PIL import Image  # noqa: F401  (pypdf needs Pillow to decode page images)
+	except ImportError:
+		raise FetchError("unsupported_type", "scanned PDF: install Pillow (pip install pillow) so its images can be OCRed") from None
+	parts = []
+	for page in reader.pages:
+		for img in page.images:
+			buf = io.BytesIO()
+			try:
+				img.image.save(buf, format="PNG")
+			except Exception as err:  # pypdf/Pillow raise many types for unusual image encodings
+				raise FetchError("unsupported_type", f"scanned PDF image could not be decoded for OCR ({type(err).__name__})") from None
+			try:
+				run = subprocess.run([exe, "stdin", "stdout"], input=buf.getvalue(), capture_output=True, timeout=OCR_TIMEOUT, check=True)
+			except subprocess.TimeoutExpired:
+				raise FetchError("fetch_failed", "OCR timed out") from None
+			except subprocess.CalledProcessError as err:
+				raise FetchError("fetch_failed", f"tesseract failed: {err.stderr.decode(errors='replace')[:200]}") from None
+			parts.append(run.stdout.decode("utf-8", "replace"))
+	text = "\n".join(parts)
+	if not text.strip():
+		raise FetchError("unsupported_type", "OCR found no text in the scanned PDF; check it by hand")
+	return text
+
+
 def pdf_to_text(data: bytes) -> str:
 	"""Text of every page, via the optional pypdf package. Refuses rather than reads part of a document.
 
@@ -191,11 +238,15 @@ def pdf_to_text(data: bytes) -> str:
 	except (PdfReadError, ValueError, KeyError, TypeError) as err:
 		raise FetchError("fetch_failed", f"PDF could not be read: {err}") from None
 	if not text.strip():
-		raise FetchError("unsupported_type", "PDF has no extractable text (scanned image?)")
+		text = ocr_pages(reader)  # raises FetchError when OCR is unavailable or finds nothing
+		ocr = True
+	else:
+		ocr = False
 	# A line-end hyphen is either a word split ("mil-" + "lion") or a real hyphen ("cloud-" + "based").
 	joined = re.sub(r"(\w)-[ \t]*\n\s*(\w)", r"\1\2", text)
 	kept = re.sub(r"(\w)-[ \t]*\n\s*(\w)", r"\1-\2", text)
-	return text if joined == text else f"{text}\n\f\n{joined}\n\f\n{kept}"
+	body = text if joined == text else f"{text}\n\f\n{joined}\n\f\n{kept}"
+	return OCR_MARK + body if ocr else body
 
 
 class FixtureFetcher:
@@ -232,4 +283,9 @@ def check_source(fetcher, url: str, quote: str | None) -> Check:
 		page = fetcher.text(url)
 	except FetchError as err:
 		return Check(url, quote, err.status, err.reason)
-	return Check(url, quote, "verified" if contains_quote(page, quote) else "quote_not_found")
+	found = contains_quote(page, quote)
+	if page.startswith(OCR_MARK):
+		reason = ("found in OCR text of a scanned PDF; OCR can misread, so confirm by eye" if found
+			else "not found in OCR text of a scanned PDF; OCR may have misread it, so check by hand")
+		return Check(url, quote, "verified" if found else "quote_not_found", reason)
+	return Check(url, quote, "verified" if found else "quote_not_found")

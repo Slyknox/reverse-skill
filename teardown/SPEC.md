@@ -1,6 +1,6 @@
 # Reverse Engineer Anything (rea): spec
 
-Status: 0.3.0, 2026-11-02 (two roadmap rounds built). Self-contained tool. It is not part of the
+Status: 0.4.0, 2026-11-02 (three roadmap rounds built). Self-contained tool. It is not part of the
 reverse-skill security router and is not wired into `skills/config/routing.json`.
 
 ## Problem
@@ -38,6 +38,9 @@ that prompted this tool showed the four usual faults:
 | The project's own local and workspace packages are never looked up | `deps.parse_manifest` | `test_local_path_dependencies_are_marked_local` |
 | PDF quotes are checked on the whole document or not at all; a missing reader is reported, not guessed | `verify.pdf_to_text` | `test_quotes_match_across_line_end_hyphens_in_both_readings`, `test_missing_pypdf_is_reported_not_guessed` |
 | Company diff suggests one-to-one matches from sourced claims only, labelled as suggestions | `diff.suggest_matches` | `test_pairs_are_one_to_one_and_cross_kind_pairs_mean_gap_or_lead`, `test_company_diff_shows_suggestions_from_sourced_claims_only` |
+| Maven versions follow parent POMs and imported BOMs, with the child's properties winning; each version names its source POM; caps and failures are reported | `maven.Resolver` | `test_parent_management_uses_the_childs_property_override`, `test_imported_bom_supplies_versions_and_unrelated_boms_are_not_fetched_first`, `test_fetch_cap_is_reported_not_guessed` |
+| A scanned PDF is OCRed only when tesseract is installed, and an OCR match is labelled for confirming by eye | `verify.ocr_pages` | `test_scanned_pdf_is_ocred_and_labelled`, `test_without_tesseract_a_scanned_pdf_is_reported` |
+| Matching maps a published vocabulary of synonyms and opposites to concepts and names any concept stated in opposite directions | `diff.CONCEPTS`, `diff.opposed` | `test_synonyms_and_opposites_share_a_concept`, `test_gap_found_through_synonyms` |
 
 ## What "better" means here
 
@@ -82,9 +85,14 @@ Built in 0.3.0:
 7. PDF sources for `verify` through the optional pypdf package.
 8. Suggested matches between free-text claims in company diffs.
 
+Built in 0.4.0:
+
+9. Maven parent POMs and imported BOMs (in-repository and Maven Central), with Maven's property and management precedence.
+10. OCR for scanned PDFs through the optional `tesseract` command.
+11. Synonym- and opposite-aware claim matching from a small published vocabulary.
+
 Not yet built:
 
-- `draft` has not been run against the live API (no API key in the build session); SDK 2.3.0 accepted the request shape.
-- Suggested matches use word overlap only; a synonym-aware matcher would need a model or an embedding service.
-- Maven parent POMs and BOM imports are not followed, so a version inherited from a parent shows as unresolved and uses the default version.
-- OCR for scanned PDFs.
+- `draft` has not been run against the live API (no Anthropic credential in the build session); SDK 2.3.0 accepted the request shape.
+- Matching beyond the vocabulary is word for word; a model-based judge could propose matches, but its output would need the same suggestion-only treatment.
+- Maven profiles and version ranges in managed versions are not evaluated.

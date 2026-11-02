@@ -55,6 +55,7 @@ def main(argv: list[str] | None = None) -> int:
 		sp.add_argument("--registry-fixture", help="recorded registry responses (JSON: url -> body)")
 		sp.add_argument("--max-lookups", type=int, default=40, help="registry lookups at most (default 40)")
 		sp.add_argument("--include-dev", action="store_true", help="also look up dev dependencies")
+		sp.add_argument("--max-pom-fetches", type=int, default=25, help="Maven parent/BOM POMs read from Maven Central at most (default 25)")
 	c = sub.add_parser("company", help="tear down a company or product from a sourced dossier")
 	c.add_argument("dossier")
 	c.add_argument("--verify", action="store_true", help="fetch each source and keep a claim only if its quote is on the page")
@@ -86,12 +87,12 @@ def main(argv: list[str] | None = None) -> int:
 		if args.cmd == "repo":
 			t = teardown_repo(client, args.repo)
 			if args.deps:
-				d = teardown_deps(client, t.repo, t.tree, t.top_level, registry, args.max_lookups, args.include_dev)
+				d = teardown_deps(client, t.repo, t.tree, t.top_level, registry, args.max_lookups, args.include_dev, args.max_pom_fetches)
 				for claim in d.ledger.sourced + d.ledger.unverified:
 					t.ledger.add(claim)
 			_write(render.repo_md(t) if args.format == "md" else render.to_json(t), args.out)
 		elif args.cmd == "deps":
-			d = deps_for_repo(client, args.repo, registry, args.max_lookups, args.include_dev)
+			d = deps_for_repo(client, args.repo, registry, args.max_lookups, args.include_dev, args.max_pom_fetches)
 			_write(render.deps_md(d) if args.format == "md" else render.to_json(d), args.out)
 		elif args.cmd in ("company", "verify"):
 			fetcher = None
