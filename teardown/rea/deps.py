@@ -26,6 +26,7 @@ from .evidence import Claim, Evidence, Ledger
 from .github import NotFound
 from .maven import Resolver, parse_pom, resolve_dependencies, wanted_artifacts
 from .tree import Tree
+from .nuget import pick as nuget_pick
 from .versions import is_range, pick
 
 MANIFESTS = {"package.json": "npm", "pyproject.toml": "pypi", "Cargo.toml": "crates", "go.mod": "go",
@@ -317,15 +318,17 @@ def resolve_license(dep: Dependency, registry, budget: int) -> tuple[str | None,
 		pkg = registry.get_json(pkg_url)
 		published = [v["versionKey"]["version"] for v in (pkg or {}).get("versions", [])]
 		chosen, note = None, None
-		if dep.ecosystem in ("maven", "nuget") and is_range(dep.spec):
+		nuget_float = dep.ecosystem == "nuget" and "*" in dep.spec
+		if (dep.ecosystem in ("maven", "nuget") and is_range(dep.spec)) or nuget_float:
 			try:
-				chosen = pick(dep.ecosystem, dep.spec, published)
+				chosen = nuget_pick(dep.spec, published) if dep.ecosystem == "nuget" else pick(dep.ecosystem, dep.spec, published)
 			except ValueError:
 				chosen = None
 			else:
 				if chosen is None:
 					return None, pkg_url, pkg is not None, f"no published version is inside the declared range {dep.spec!r}", 1
-				rule = "highest, as Maven picks" if dep.ecosystem == "maven" else "lowest, as NuGet picks"
+				rule = ("highest, as Maven picks" if dep.ecosystem == "maven"
+					else "highest floating match, as NuGet picks" if nuget_float else "lowest, as NuGet picks")
 				note = f"declared range {dep.spec!r}; license of {chosen}, the {rule}"
 		if chosen is None:
 			chosen = next((v["versionKey"]["version"] for v in (pkg or {}).get("versions", []) if v.get("isDefault")), None)

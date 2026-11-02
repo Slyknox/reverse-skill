@@ -64,6 +64,7 @@ def main(argv: list[str] | None = None) -> int:
 		sp.add_argument("--os-family", help="e.g. unix, windows, mac")
 		sp.add_argument("--os-name", help="e.g. linux")
 		sp.add_argument("--os-arch", help="e.g. amd64, aarch64")
+		sp.add_argument("--env", action="append", default=[], help="NAME=value environment variable for env.NAME profile conditions")
 	c = sub.add_parser("company", help="tear down a company or product from a sourced dossier")
 	c.add_argument("dossier")
 	c.add_argument("--verify", action="store_true", help="fetch each source and keep a claim only if its quote is on the page")
@@ -92,7 +93,7 @@ def main(argv: list[str] | None = None) -> int:
 
 	try:
 		if args.cmd in ("repo", "deps"):
-			build = BuildContext.from_args(args.maven_profile, args.maven_property, jdk=args.jdk,
+			build = BuildContext.from_args(args.maven_profile, args.maven_property, args.env, jdk=args.jdk,
 				os_family=args.os_family, os_name=args.os_name, os_arch=args.os_arch)
 			client = FixtureClient(_load(args.fixture)) if args.fixture else Client()
 			registry = FixtureRegistry(_load(args.registry_fixture)) if args.registry_fixture else Registry()

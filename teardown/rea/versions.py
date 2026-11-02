@@ -10,8 +10,9 @@ lowest. Ordering follows each tool closely enough for real version strings:
   itself (tests/fixtures/maven_order.json). Qualifiers order as
   alpha < beta < milestone < rc < snapshot < (release) < sp, then unknown
   qualifiers in text order; "1.0" equals "1"; "1a1" equals "1-alpha-1".
-- NuGet: SemVer-style; a pre-release ("1.0.0-beta") sorts before its release
-  and is left out of a range unless a bound itself is a pre-release.
+- NuGet: delegated to rea.nuget, a port of NuGet.Versioning (ordering, one-interval
+  ranges, floating versions and the resolver's choice), checked against NuGet's own
+  unit-test data.
 """
 
 from __future__ import annotations
@@ -156,15 +157,13 @@ def maven_compare(a: str, b: str) -> int:
 maven_key = functools.cmp_to_key(maven_compare)  # sort key in Maven 3.9.9's order
 
 
-def nuget_key(version: str) -> tuple:
-	core, _, pre = version.lstrip("vV").partition("-")
-	core = core.split("+", 1)[0]
-	nums = [int(n) if n.isdigit() else 0 for n in core.split(".")]
-	while len(nums) < 4:
-		nums.append(0)
-	pre_parts = tuple((0, int(p), "") if p.isdigit() else (1, 0, p.lower()) for p in pre.split(".")) if pre else ()
-	# A release (no pre-release part) sorts after every pre-release of the same numbers.
-	return (tuple(nums), 0 if pre else 1, pre_parts)
+def _nuget_compare(a: str, b: str) -> int:
+	from .nuget import compare_strings  # the port of NuGet.Versioning's default comparer
+
+	return compare_strings(a, b)
+
+
+nuget_key = functools.cmp_to_key(_nuget_compare)  # sort key in NuGet's order (rea.nuget)
 
 
 def is_prerelease(ecosystem: str, version: str) -> bool:
@@ -225,6 +224,10 @@ def parse_range(spec: str) -> list[Interval]:
 
 def pick(ecosystem: str, spec: str, available: list[str]) -> str | None:
 	"""The version Maven (highest) or NuGet (lowest) would resolve the range to, from the published versions."""
+	if ecosystem == "nuget":
+		from .nuget import pick as nuget_pick  # the port of NuGet.Versioning, including floats
+
+		return nuget_pick(spec, available)
 	key = nuget_key if ecosystem == "nuget" else maven_key
 	intervals = parse_range(spec)
 	allow_pre = ecosystem != "nuget" or any(

@@ -21,6 +21,10 @@ Rules followed (Maven 3.2.2 and later):
   which is what a plain command-line build sees.
 - file: <exists>/<missing>, after ${basedir} and ${project.basedir}, checked
   against the repository's file listing. Any other ${...} is unknown.
+- property env.X: decided only by an --env X=value you give (an environment
+  holds many variables, so one you do not list is unknown, not absent).
+- packaging (Maven 4): the POM's own <packaging>, jar when absent; a leading
+  "!" negates it, as for the other conditions.
 - activeByDefault: on only when no other profile in the same POM is on. If any
   other profile's state is unknown, the default profile is applied and the
   report says it might not be.
@@ -45,10 +49,17 @@ class BuildContext:
 	os_family: str | None = None
 	os_arch: str | None = None
 	os_version: str | None = None
+	env: dict[str, str] = field(default_factory=dict)  # only the variables given; any other is unknown
 
 	@classmethod
-	def from_args(cls, profiles: list[str] | None = None, properties: list[str] | None = None, **os_and_jdk) -> "BuildContext":
+	def from_args(cls, profiles: list[str] | None = None, properties: list[str] | None = None,
+			env: list[str] | None = None, **os_and_jdk) -> "BuildContext":
 		ctx = cls(**{k: v for k, v in os_and_jdk.items() if v})
+		for item in env or []:
+			name, eq, value = item.partition("=")
+			if not name or not eq:
+				raise ValueError(f"--env needs NAME=value (NAME= for set but empty), got {item!r}")
+			ctx.env[name] = value
 		for chunk in profiles or []:
 			for pid in (p.strip() for p in chunk.split(",")):
 				if pid.startswith(("!", "-")):
@@ -67,7 +78,8 @@ class BuildContext:
 			f"-P !{',!'.join(sorted(self.profiles_off))}" if self.profiles_off else "",
 			" ".join(f"-D{k}={v}" for k, v in sorted(self.properties.items())),
 			f"jdk {self.jdk}" if self.jdk else "", f"os family {self.os_family}" if self.os_family else "",
-			f"os name {self.os_name}" if self.os_name else "", f"os arch {self.os_arch}" if self.os_arch else ""]
+			f"os name {self.os_name}" if self.os_name else "", f"os arch {self.os_arch}" if self.os_arch else "",
+			" ".join(f"env {k}={v}" for k, v in sorted(self.env.items()))]
 		return ", ".join(p for p in parts if p) or "no build context given"
 
 
@@ -115,8 +127,12 @@ def _property(name: str | None, value: str | None, ctx: BuildContext) -> Result:
 		return None, "property activation without a name"
 	negate_name, name = _neg(name)
 	if name.startswith("env."):
-		return None, f"environment variable {name[4:]} is not part of the build context"
-	have = ctx.properties.get(name)
+		# Environments hold many variables, so absence from the context proves nothing: only listed ones count.
+		if name[4:] not in ctx.env:
+			return None, f"needs --env {name[4:]}=..."
+		have = ctx.env[name[4:]]
+	else:
+		have = ctx.properties.get(name)
 	if not value:  # as Maven: "set" means a non-empty value, and "!name" reverses it
 		is_set = bool(have)
 		return is_set != negate_name, f"property {'!' if negate_name else ''}{name} ({'set' if is_set else 'not set'})"
@@ -140,7 +156,14 @@ def _file(exists: str | None, missing: str | None, pom_dir: str | None, file_exi
 	return present == want_present, f"file {resolved} {'exists' if present else 'missing'}"
 
 
-def evaluate(profile_id: str, activation: dict | None, ctx: BuildContext, pom_dir: str | None, file_exists) -> Result:
+def _packaging(spec: str, packaging: str | None) -> Result:
+	negate, want = _neg(spec)
+	have = packaging or "jar"  # Maven's default packaging
+	return (have == want) != negate, f"packaging {have} vs {'!' if negate else ''}{want}"
+
+
+def evaluate(profile_id: str, activation: dict | None, ctx: BuildContext, pom_dir: str | None, file_exists,
+		packaging: str | None = None) -> Result:
 	"""activation: {"jdk": str, "os": {...}, "property": (name, value), "file": (exists, missing)} or None."""
 	if profile_id in ctx.profiles_off:
 		return False, "turned off with -P !" + profile_id
@@ -157,6 +180,8 @@ def evaluate(profile_id: str, activation: dict | None, ctx: BuildContext, pom_di
 		results.append(_property(*activation["property"], ctx))
 	if "file" in activation:
 		results.append(_file(*activation["file"], pom_dir, file_exists))
+	if "packaging" in activation:
+		results.append(_packaging(activation["packaging"], packaging))
 	if not results:
 		return False, "no activation condition"
 	if any(r[0] is False for r in results):

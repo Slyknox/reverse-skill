@@ -111,6 +111,8 @@ def _activation(el) -> tuple[bool, dict | None]:
 		cond["property"] = (_txt(fields["property"], "name"), _txt(fields["property"], "value"))
 	if "file" in fields:
 		cond["file"] = (_txt(fields["file"], "exists"), _txt(fields["file"], "missing"))
+	if "packaging" in fields:
+		cond["packaging"] = (fields["packaging"].text or "").strip()
 	return (_txt(el, "activeByDefault") or "").lower() == "true", cond or None
 
 
@@ -135,7 +137,7 @@ def parse_pom(text: str, ctx: BuildContext | None = None, pom_dir: str | None = 
 	for profile in fields.get("profiles", []):
 		name = _txt(profile, "id") or "(no id)"
 		by_default, cond = _activation(next((c for c in profile if _local(c.tag) == "activation"), None))
-		state, why = evaluate(name, cond, ctx, pom_dir, file_exists)
+		state, why = evaluate(name, cond, ctx, pom_dir, file_exists, _txt(root, "packaging"))
 		# activeByDefault is a fallback: a default profile whose own conditions do not switch it on
 		# (and that -P did not turn off) is applied only if no other profile in this POM is on.
 		if by_default and state is not True and name not in ctx.profiles_off:
