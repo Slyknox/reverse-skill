@@ -59,7 +59,7 @@ def figures_md(figures: list[Figure], title: str = "Ranking by metric kind") -> 
 
 def repo_md(t) -> str:
 	out = [f"# Teardown: {t.repo}", "", f"Source: {t.html_url}", "",
-		"Every line below cites the GitHub API response it came from. Checks cover what the API shows at the top level; deeper structure is not inspected.", "",
+		"Every line below cites the GitHub API response it came from. Tests and lockfiles are looked for across the whole file listing; vendored and generated folders are skipped.", "",
 		"## Pros and cons", ""]
 	out += _matrix(t.ledger)
 	out += ["## Original build plan", "", "Fix weaknesses first, then keep strengths. Each item names how you will know it is done.", ""]
@@ -67,8 +67,25 @@ def repo_md(t) -> str:
 	return "\n".join(out)
 
 
+def checks_md(checks) -> list[str]:
+	if not checks:
+		return []
+	from .verify import STATUSES
+
+	ok = sum(1 for c in checks if c.status == "verified")
+	out = ["## Quote check", "", f"{ok} of {len(checks)} source quotes were found on their pages. A claim with any unconfirmed quote is moved to Unverified.", "",
+		"| Status | Source | Quote | Detail |", "|---|---|---|---|"]
+	for c in checks:
+		quote = (c.quote or "").replace("|", "\\|")
+		quote = quote if len(quote) <= 80 else quote[:77] + "..."
+		out.append(f"| {c.status} | {c.url} | {quote or '-'} | {c.reason or STATUSES.get(c.status, '')} |")
+	return out + [""]
+
+
 def company_md(t) -> str:
-	out = [f"# Teardown: {t.entity}", "", f"Dossier as of: {t.as_of or 'unknown'}", "", "## Pros and cons", ""]
+	out = [f"# Teardown: {t.entity}", "", f"Dossier as of: {t.as_of or 'unknown'}", ""]
+	out += checks_md(t.checks)
+	out += ["## Pros and cons", ""]
 	out += _matrix(t.ledger)
 	out += figures_md(t.figures, "Figures")
 	out += ["## Original build plan", ""] + _plan(t.plan())
@@ -77,6 +94,8 @@ def company_md(t) -> str:
 
 def to_json(obj) -> str:
 	payload = asdict(obj)
+	payload.pop("tree", None)
+	payload.pop("top_level", None)
 	if hasattr(obj, "plan"):
 		payload["plan"] = obj.plan()
 	return json.dumps(payload, indent=2, default=str)
@@ -85,3 +104,16 @@ def to_json(obj) -> str:
 def ranking_json(figures: list[Figure]) -> str:
 	return json.dumps({kind: [{**asdict(f), "rank": i + 1, "flags": f.flags} for i, f in enumerate(group)]
 		for kind, group in rank(figures).items()}, indent=2)
+
+
+def deps_md(d) -> str:
+	out = [f"# Dependencies: {d.repo}", "", "Licenses come from the package registry; each is linked to the registry answer it came from.", "",
+		"## Findings", ""]
+	out += _matrix(d.ledger)
+	if d.dependencies:
+		out += ["## Dependency list", "", "| Name | Version spec | Ecosystem | Scope | Manifest | License | Class |", "|---|---|---|---|---|---|---|"]
+		for dep in d.dependencies:
+			lic = f"[{dep.license or 'not stated'}]({dep.license_source})" if dep.license_source else "not looked up"
+			out.append(f"| {dep.name} | `{dep.spec}` | {dep.ecosystem} | {dep.scope} | {dep.manifest} | {lic} | {dep.license_class if dep.looked_up else 'n/a'} |")
+		out.append("")
+	return "\n".join(out)

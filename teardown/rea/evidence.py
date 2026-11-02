@@ -22,10 +22,12 @@ class Evidence:
 	url: str
 	quote: str | None = None
 	retrieved_at: str | None = None
+	# Set only by a quote check (rea.verify): "verified" or the reason it is not.
+	check: str | None = None
 
 	def is_valid(self) -> bool:
 		parsed = urlparse(self.url)
-		return parsed.scheme == "https" and bool(parsed.netloc)
+		return parsed.scheme == "https" and bool(parsed.netloc) and self.check in (None, "verified")
 
 	@classmethod
 	def from_dict(cls, data: dict) -> "Evidence":
